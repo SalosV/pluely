@@ -4,6 +4,7 @@ import {
   MessagesSquare,
   WandSparkles,
   AudioLinesIcon,
+  MicIcon,
   SquareSlashIcon,
   MonitorIcon,
   PowerIcon,
@@ -51,6 +52,11 @@ export const useMenuItems = () => {
       icon: AudioLinesIcon,
       label: "Audio",
       href: "/audio",
+    },
+    {
+      icon: MicIcon,
+      label: "Voice",
+      href: "/voice",
     },
     {
       icon: SquareSlashIcon,

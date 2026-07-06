@@ -17,33 +17,12 @@ import {
   generateConversationId,
   generateMessageId,
 } from "@/lib";
+import { useVadConfigStore, useSystemAudioContextStore } from ".";
 import { Message } from "@/types/completion";
 
-// VAD Configuration interface matching Rust
-export interface VadConfig {
-  enabled: boolean;
-  hop_size: number;
-  sensitivity_rms: number;
-  peak_threshold: number;
-  silence_chunks: number;
-  min_speech_chunks: number;
-  pre_speech_chunks: number;
-  noise_gate_threshold: number;
-  max_recording_duration_secs: number;
-}
-
-// OPTIMIZED VAD defaults - matches backend exactly for perfect performance
-const DEFAULT_VAD_CONFIG: VadConfig = {
-  enabled: true,
-  hop_size: 1024,
-  sensitivity_rms: 0.012, // Much less sensitive - only real speech
-  peak_threshold: 0.035, // Higher threshold - filters clicks/noise
-  silence_chunks: 45, // ~1.0s of required silence
-  min_speech_chunks: 7, // ~0.16s - captures short answers
-  pre_speech_chunks: 12, // ~0.27s - enough to catch word start
-  noise_gate_threshold: 0.003, // Stronger noise filtering
-  max_recording_duration_secs: 180, // 3 minutes default
-};
+// VAD config type/defaults now live in the shared storage layer; re-exported
+// here to keep existing import paths (`@/hooks/useSystemAudio`) working.
+export type { VadConfig } from "@/lib";
 
 // Chat message interface (reusing from useCompletion)
 interface ChatMessage {
@@ -79,7 +58,10 @@ export function useSystemAudio() {
   const [isManagingQuickActions, setIsManagingQuickActions] =
     useState<boolean>(false);
   const [showQuickActions, setShowQuickActions] = useState<boolean>(true);
-  const [vadConfig, setVadConfig] = useState<VadConfig>(DEFAULT_VAD_CONFIG);
+  // VAD config lives in a shared store (localStorage + backend sync), so the
+  // dashboard settings page and this overlay hook stay in sync.
+  const { vadConfig, updateVadConfig: updateVadConfiguration } =
+    useVadConfigStore();
   const [recordingProgress, setRecordingProgress] = useState<number>(0); // For continuous mode
   const [isContinuousMode, setIsContinuousMode] = useState<boolean>(false);
   const [isRecordingInContinuousMode, setIsRecordingInContinuousMode] =
@@ -93,9 +75,13 @@ export function useSystemAudio() {
     updatedAt: 0,
   });
 
-  // Context management states
-  const [useSystemPrompt, setUseSystemPrompt] = useState<boolean>(true);
-  const [contextContent, setContextContent] = useState<string>("");
+  // Context management (shared store: localStorage + cross-window sync)
+  const {
+    useSystemPrompt,
+    contextContent,
+    setUseSystemPrompt: updateUseSystemPrompt,
+    setContextContent: updateContextContent,
+  } = useSystemAudioContextStore();
 
   const {
     selectedSttProvider,
@@ -110,32 +96,8 @@ export function useSystemAudio() {
   const isSavingRef = useRef<boolean>(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
-  // Load context settings and VAD config from localStorage on mount
-  useEffect(() => {
-    const savedContext = safeLocalStorage.getItem(
-      STORAGE_KEYS.SYSTEM_AUDIO_CONTEXT
-    );
-    if (savedContext) {
-      try {
-        const parsed = JSON.parse(savedContext);
-        setUseSystemPrompt(parsed.useSystemPrompt ?? true);
-        setContextContent(parsed.contextContent ?? "");
-      } catch (error) {
-        console.error("Failed to load system audio context:", error);
-      }
-    }
-
-    // Load VAD config
-    const savedVadConfig = safeLocalStorage.getItem("vad_config");
-    if (savedVadConfig) {
-      try {
-        const parsed = JSON.parse(savedVadConfig);
-        setVadConfig(parsed);
-      } catch (error) {
-        console.error("Failed to load VAD config:", error);
-      }
-    }
-  }, []);
+  // VAD config and context settings are loaded from localStorage by their
+  // shared stores (useVadConfigStore / useSystemAudioContextStore) on mount.
 
   // Load quick actions from localStorage on mount
   useEffect(() => {
@@ -318,40 +280,8 @@ export function useSystemAudio() {
     conversation.messages.length,
   ]);
 
-  // Context management functions
-  const saveContextSettings = useCallback(
-    (usePrompt: boolean, content: string) => {
-      try {
-        const contextSettings = {
-          useSystemPrompt: usePrompt,
-          contextContent: content,
-        };
-        safeLocalStorage.setItem(
-          STORAGE_KEYS.SYSTEM_AUDIO_CONTEXT,
-          JSON.stringify(contextSettings)
-        );
-      } catch (error) {
-        console.error("Failed to save context settings:", error);
-      }
-    },
-    []
-  );
-
-  const updateUseSystemPrompt = useCallback(
-    (value: boolean) => {
-      setUseSystemPrompt(value);
-      saveContextSettings(value, contextContent);
-    },
-    [contextContent, saveContextSettings]
-  );
-
-  const updateContextContent = useCallback(
-    (content: string) => {
-      setContextContent(content);
-      saveContextSettings(useSystemPrompt, content);
-    },
-    [useSystemPrompt, saveContextSettings]
-  );
+  // Context settings are managed by useSystemAudioContextStore (its setters are
+  // aliased above as updateUseSystemPrompt / updateContextContent).
 
   // Quick actions management
   const saveQuickActions = useCallback((actions: string[]) => {
@@ -775,19 +705,10 @@ export function useSystemAudio() {
     setIsProcessing(false);
     setIsAIProcessing(false);
     setIsPopoverOpen(false);
-    setUseSystemPrompt(true);
-  }, []);
+    updateUseSystemPrompt(true);
+  }, [updateUseSystemPrompt]);
 
-  // Update VAD configuration
-  const updateVadConfiguration = useCallback(async (config: VadConfig) => {
-    try {
-      setVadConfig(config);
-      safeLocalStorage.setItem("vad_config", JSON.stringify(config));
-      await invoke("update_vad_config", { config });
-    } catch (error) {
-      console.error("Failed to update VAD config:", error);
-    }
-  }, []);
+  // updateVadConfiguration is provided by useVadConfigStore (aliased above).
 
   useEffect(() => {
     if (capturing) {

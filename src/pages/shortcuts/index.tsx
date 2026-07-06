@@ -1,4 +1,4 @@
-import { CursorSelection, ShortcutManager } from "./components";
+import { CursorSelection, ShortcutManager, OverlayHelp } from "./components";
 import { PageLayout } from "@/layouts";
 
 const Shortcuts = () => {
@@ -13,6 +13,9 @@ const Shortcuts = () => {
 
         {/* Keyboard Shortcuts */}
         <ShortcutManager />
+
+        {/* System Audio Overlay help & in-overlay shortcuts */}
+        <OverlayHelp />
       </div>
     </PageLayout>
   );

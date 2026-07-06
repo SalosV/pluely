@@ -8,6 +8,8 @@ export * from "./useSettings";
 export * from "./useGlobalShortcuts";
 export * from "./useShortcuts";
 export * from "./useSystemAudio";
+export * from "./useVadConfigStore";
+export * from "./useSystemAudioContextStore";
 export * from "./useHistory";
 export * from "./useCopyToClipboard";
 export * from "./useTitles";

@@ -19,10 +19,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { ModeSwitcher } from "./ModeSwitcher";
 import { RecordingPanel } from "./RecordingPanel";
 import { ResultsSection } from "./ResultsSection";
-import { SettingsPanel } from "./SettingsPanel";
 import { PermissionFlow } from "./PermissionFlow";
 import { QuickActions } from "./QuickActions";
-import { Warning } from "./Warning";
 import { useSystemAudioType } from "@/hooks";
 import { useApp } from "@/contexts";
 import { cn } from "@/lib/utils";
@@ -40,10 +38,6 @@ export const SystemAudio = (props: useSystemAudioType) => {
     stopCapture,
     isPopoverOpen,
     setIsPopoverOpen,
-    useSystemPrompt,
-    setUseSystemPrompt,
-    contextContent,
-    setContextContent,
     startNewConversation,
     conversation,
     resizeWindow,
@@ -356,19 +350,6 @@ export const SystemAudio = (props: useSystemAudioType) => {
                       conversationMode={conversationMode}
                       setConversationMode={setConversationMode}
                     />
-
-                    {/* Settings Panel */}
-                    <SettingsPanel
-                      vadConfig={vadConfig}
-                      onUpdateVadConfig={updateVadConfiguration}
-                      useSystemPrompt={useSystemPrompt}
-                      setUseSystemPrompt={setUseSystemPrompt}
-                      contextContent={contextContent}
-                      setContextContent={setContextContent}
-                    />
-
-                    {/* Help/Keyboard Shortcuts */}
-                    <Warning isVadMode={isVadMode} />
                   </>
                 )}
               </div>
