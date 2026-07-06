@@ -38,13 +38,10 @@ export type IContextType = {
   customizable: CustomizableState;
   toggleAppIconVisibility: (isVisible: boolean) => Promise<void>;
   toggleAlwaysOnTop: (isEnabled: boolean) => Promise<void>;
+  toggleContentProtection: (isEnabled: boolean) => Promise<void>;
   toggleAutostart: (isEnabled: boolean) => Promise<void>;
   loadData: () => void;
-  pluelyApiEnabled: boolean;
-  setPluelyApiEnabled: (enabled: boolean) => Promise<void>;
   hasActiveLicense: boolean;
-  setHasActiveLicense: Dispatch<SetStateAction<boolean>>;
-  getActiveLicenseStatus: () => Promise<void>;
   selectedAudioDevices: {
     input: { id: string; name: string };
     output: { id: string; name: string };

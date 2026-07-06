@@ -1,12 +1,4 @@
-import {
-  Badge,
-  Card,
-  Empty,
-  Button,
-  Markdown,
-  Textarea,
-  GetLicense,
-} from "@/components";
+import { Badge, Card, Empty, Button, Markdown, Textarea } from "@/components";
 import { getConversationById } from "@/lib";
 import { ChatConversation } from "@/types";
 import {
@@ -236,20 +228,6 @@ const View = () => {
         )}
 
         <div className="relative flex items-start gap-2 p-4">
-          {!hasActiveLicense && (
-            <div className="select-none p-5 z-100 bg-primary/5 border border-primary/20 rounded-xl absolute top-4 left-4 right-4">
-              <div className="max-w-sm mx-auto">
-                <p className="text-sm font-medium text-center">
-                  You need an active license to use this feature.
-                </p>
-
-                <GetLicense
-                  buttonText="Get License"
-                  buttonClassName="w-full mt-2"
-                />
-              </div>
-            </div>
-          )}
           <div className="flex-1 relative">
             {completion.isRecording ? (
               <AudioRecorder

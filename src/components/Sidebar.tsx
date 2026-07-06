@@ -15,7 +15,7 @@ export const Sidebar = () => {
     <aside className="flex w-56 flex-col select-none pt-2">
       {/* Logo */}
       <div
-        onClick={() => navigate("/dashboard")}
+        onClick={() => navigate("/chats")}
         className="flex h-16 items-center px-4 pt-10 gap-1.5"
       >
         <div className="flex size-6 lg:size-7 items-center justify-center rounded-lg bg-primary">

@@ -573,6 +573,34 @@ pub fn set_always_on_top<R: Runtime>(app: AppHandle<R>, enabled: bool) -> Result
     Ok(())
 }
 
+/// Tauri command to toggle screen-capture content protection.
+///
+/// When enabled, the app windows are excluded from screenshots and screen
+/// sharing/recording (the app's stealth mode). When disabled, the windows
+/// behave like normal windows and show up in captures.
+#[tauri::command]
+pub fn set_content_protected<R: Runtime>(
+    app: AppHandle<R>,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut applied = false;
+
+    for label in ["main", "dashboard"] {
+        if let Some(window) = app.get_webview_window(label) {
+            window
+                .set_content_protected(enabled)
+                .map_err(|e| format!("Failed to set content protection on {}: {}", label, e))?;
+            applied = true;
+        }
+    }
+
+    if !applied {
+        return Err("No windows found to apply content protection".to_string());
+    }
+
+    Ok(())
+}
+
 /// Handle toggle dashboard shortcut
 fn handle_toggle_dashboard<R: Runtime>(app: &AppHandle<R>) {
     if let Some(dashboard_window) = app.get_webview_window("dashboard") {
