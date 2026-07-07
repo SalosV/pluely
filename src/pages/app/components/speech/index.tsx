@@ -225,23 +225,28 @@ export const SystemAudio = (props: useSystemAudioType) => {
     ? "auto"
     : "manual";
 
-  const handleModeChange = (next: CaptureMode) => {
+  const handleModeChange = async (next: CaptureMode) => {
     if (next === captureMode) return;
-    // Switching modes ends whatever session is currently running so two
-    // pipelines can't overlap: a live stream is stopped by setLiveMode(false),
-    // and an in-progress batch capture is stopped here.
-    if (capturing) {
-      void stopCapture();
+    // Keep the panel open across the switch so it never feels like the window
+    // closed on an error. stopCapture() (below) sets isPopoverOpen(false)
+    // asynchronously, so we await it and reopen afterwards — for EVERY mode, not
+    // just Live.
+    const wasCapturing = capturing;
+    if (wasCapturing) {
+      await stopCapture();
     }
+
     if (next === "live") {
       setLiveMode(true);
-      // stopCapture() above closes the popover; reopen it so the Live panel
-      // (with its Start button and any config error) stays visible.
-      setIsPopoverOpen(true);
     } else {
       setLiveMode(false);
       updateVadConfiguration({ ...vadConfig, enabled: next === "auto" });
     }
+
+    // Reopen the panel for the newly-selected mode. The resize effect above
+    // keys on isPopoverOpen, so this alone keeps the window expanded and the
+    // panel visible right after the switch — for every mode, not just Live.
+    setIsPopoverOpen(true);
   };
 
   // The window height is controlled explicitly: the overlay is a ~60px bar
@@ -252,19 +257,22 @@ export const SystemAudio = (props: useSystemAudioType) => {
   // (mode selected, or a stream running) so the panel actually shows.
   useEffect(() => {
     const liveActive = liveMode || dg.isStreaming;
-    // Pin the window expanded while Live is active so the DOM-polling observer
-    // in useWindowResize can't shrink it out from under the panel.
-    setWindowForceExpanded(liveActive);
+    // The window should be expanded whenever the panel is meant to be visible:
+    // a Live session, an open popover (e.g. right after a mode switch, so the
+    // newly-selected mode's panel shows instead of collapsing to the bar), or an
+    // active batch capture / error. Pin force-expand in all those cases so the
+    // DOM-polling observer in useWindowResize can't shrink it away.
+    const shouldExpand =
+      liveActive || isPopoverOpen || !!capturing || !!error;
+    setWindowForceExpanded(shouldExpand);
     if (liveActive) {
       setIsPopoverOpen(true);
-      resizeWindow(true);
-    } else {
-      // Left Live: unpin and let the hook's own effect decide the size.
-      resizeWindow(!!capturing || !!error);
     }
+    resizeWindow(shouldExpand);
   }, [
     liveMode,
     dg.isStreaming,
+    isPopoverOpen,
     capturing,
     error,
     setIsPopoverOpen,
