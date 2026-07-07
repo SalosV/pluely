@@ -21,6 +21,9 @@ type TranscriptUpdate = {
   text: string;
   is_final: boolean;
   speakers: SpeakerSegment[];
+  // Source channel in the unified two-channel Live session (#34):
+  // 0 = mic ("You"), 1 = system ("Interlocutor"). Absent in single-channel.
+  channel?: number | null;
 };
 
 /** A finalized turn in the running transcript. */
@@ -28,6 +31,14 @@ export type TranscriptEntry = {
   id: number;
   text: string;
   speakers: SpeakerSegment[];
+  // Which source produced this turn (see TranscriptUpdate.channel).
+  channel?: number | null;
+};
+
+/** Current (not-yet-final) transcript for one channel. */
+export type InterimEntry = {
+  channel: number | null;
+  text: string;
 };
 
 export type DeepgramConfigInput = {
@@ -43,8 +54,12 @@ export function useDeepgramStreaming() {
   const [error, setError] = useState<string>("");
   // Finalized turns, in order.
   const [finals, setFinals] = useState<TranscriptEntry[]>([]);
-  // The current, not-yet-final transcript (live preview).
-  const [interim, setInterim] = useState<string>("");
+  // The current, not-yet-final transcript(s), keyed by channel. In the unified
+  // two-channel session (#34) the mic ("You") and system ("Interlocutor")
+  // produce interims independently, so a single string would let one overwrite
+  // the other. We key by channel (using -1 as the key for the single-channel
+  // case where `channel` is absent) so each source shows its own live preview.
+  const [interims, setInterims] = useState<Record<number, string>>({});
 
   const entryIdRef = useRef(0);
   const unlistensRef = useRef<UnlistenFn[]>([]);
@@ -61,10 +76,14 @@ export function useDeepgramStreaming() {
   }, []);
 
   const startStreaming = useCallback(
-    async (config: DeepgramConfigInput, deviceId?: string) => {
+    async (
+      config: DeepgramConfigInput,
+      deviceId?: string,
+      inputDeviceId?: string
+    ) => {
       setError("");
       setFinals([]);
-      setInterim("");
+      setInterims({});
       setConnected(false);
 
       // Register listeners BEFORE starting so we don't miss early events.
@@ -73,8 +92,16 @@ export function useDeepgramStreaming() {
         listen("dg-connected", () => setConnected(true)),
         listen<TranscriptUpdate>("dg-transcript", (e) => {
           const update = e.payload;
+          // Key interims by channel; -1 stands in for the single-channel case.
+          const key = update.channel ?? -1;
           if (update.is_final) {
-            setInterim("");
+            // Clear only this channel's interim.
+            setInterims((prev) => {
+              if (prev[key] === undefined) return prev;
+              const next = { ...prev };
+              delete next[key];
+              return next;
+            });
             if (update.text.trim()) {
               setFinals((prev) => [
                 ...prev,
@@ -82,11 +109,12 @@ export function useDeepgramStreaming() {
                   id: entryIdRef.current++,
                   text: update.text,
                   speakers: update.speakers ?? [],
+                  channel: update.channel ?? null,
                 },
               ]);
             }
           } else {
-            setInterim(update.text);
+            setInterims((prev) => ({ ...prev, [key]: update.text }));
           }
         }),
         listen<string>("dg-error", (e) => {
@@ -111,7 +139,10 @@ export function useDeepgramStreaming() {
             language: config.language ?? "multi",
             diarize: config.diarize ?? true,
           },
+          // System output device (tap) and microphone input device. Live is
+          // always a unified two-channel session (mic + system).
           deviceId: deviceId ?? null,
+          inputDeviceId: inputDeviceId ?? null,
         });
         setIsStreaming(true);
       } catch (err: any) {
@@ -132,7 +163,7 @@ export function useDeepgramStreaming() {
     cleanupListeners();
     setIsStreaming(false);
     setConnected(false);
-    setInterim("");
+    setInterims({});
   }, [cleanupListeners]);
 
   // Clean up on unmount.
@@ -142,12 +173,19 @@ export function useDeepgramStreaming() {
     };
   }, [cleanupListeners]);
 
+  // Expose interims as a stable, ordered array (by channel) for rendering, each
+  // tagged with its channel so the UI can label "You" / "Interlocutor".
+  const interimEntries: InterimEntry[] = Object.entries(interims)
+    .filter(([, text]) => text.trim().length > 0)
+    .map(([key, text]) => ({ channel: Number(key), text }))
+    .sort((a, b) => (a.channel ?? -1) - (b.channel ?? -1));
+
   return {
     isStreaming,
     connected,
     error,
     finals,
-    interim,
+    interims: interimEntries,
     startStreaming,
     stopStreaming,
   };

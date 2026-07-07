@@ -69,6 +69,11 @@ pub struct TranscriptUpdate {
     pub is_final: bool,
     /// Per-speaker segments when diarization is on (empty otherwise).
     pub speakers: Vec<SpeakerSegment>,
+    /// Source channel in multichannel mode (#34): 0 = mic ("You"),
+    /// 1 = system ("Interlocutor"). `None` in single-channel mode, which keeps
+    /// the original system-only path byte-for-byte compatible on the frontend.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -85,6 +90,9 @@ struct DgMessage {
     msg_type: Option<String>,
     is_final: Option<bool>,
     channel: Option<DgChannel>,
+    // In multichannel streaming, Deepgram sends a separate Results message per
+    // channel, each tagged with `channel_index: [this_channel, total_channels]`.
+    channel_index: Option<Vec<i64>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -110,16 +118,26 @@ struct DgWord {
 }
 
 /// Build the wss URL with all query params.
-fn build_url(sample_rate: u32, cfg: &DeepgramConfig) -> String {
+///
+/// `channels` is 1 for the system-only path and 2 for the unified mic+system
+/// session (#34). With 2 channels we add `multichannel=true` and turn diarize
+/// OFF: each channel is one speaker, so the channel index (not diarization)
+/// gives the "You" vs "Interlocutor" identity, deterministically.
+fn build_url(sample_rate: u32, channels: u16, cfg: &DeepgramConfig) -> String {
+    let multichannel = channels >= 2;
+    // In multichannel mode, identity comes from the channel, so diarize is off.
+    let diarize = if multichannel { false } else { cfg.diarize };
     format!(
         "wss://api.deepgram.com/v1/listen?model={model}&language={lang}\
-&encoding=linear16&sample_rate={sr}&channels=1&interim_results=true\
-&punctuate=true&smart_format=true&diarize={diarize}&endpointing={ep}\
-&utterance_end_ms={ue}&vad_events=true",
+&encoding=linear16&sample_rate={sr}&channels={ch}&multichannel={mc}\
+&interim_results=true&punctuate=true&smart_format=true&diarize={diarize}\
+&endpointing={ep}&utterance_end_ms={ue}&vad_events=true",
         model = cfg.model,
         lang = cfg.language,
         sr = sample_rate,
-        diarize = cfg.diarize,
+        ch = channels,
+        mc = multichannel,
+        diarize = diarize,
         ep = cfg.endpointing,
         ue = cfg.utterance_end_ms,
     )
@@ -160,13 +178,15 @@ pub async fn run_deepgram_streaming(
     app: AppHandle,
     stream: impl StreamExt<Item = f32> + Unpin + Send + 'static,
     sample_rate: u32,
+    // 1 = system-only; 2 = unified mic+system stereo (#34).
+    channels: u16,
     cfg: DeepgramConfig,
     stop_flag: Arc<AtomicBool>,
     // Owned by AudioState so stop_system_audio_capture can wake the child tasks
     // directly, without depending on this (abortable) parent task.
     stop_notify: Arc<Notify>,
 ) {
-    let url = build_url(sample_rate, &cfg);
+    let url = build_url(sample_rate, channels, &cfg);
 
     // Build the handshake request and attach the Authorization header.
     let mut request = match url.as_str().into_client_request() {
@@ -252,8 +272,15 @@ pub async fn run_deepgram_streaming(
     let producer_stop = stop_notify.clone();
     let producer = tokio::spawn(async move {
         let mut stream = stream;
-        // ~50ms of audio per frame at the given sample rate.
-        let frame_samples = ((sample_rate as usize) / 20).max(256);
+        // ~50ms of audio per frame at the given sample rate, times channel count
+        // (the combiner yields interleaved L,R,L,R… so a "frame" here counts
+        // individual i16 samples across both channels).
+        let mut frame_samples = ((sample_rate as usize) / 20 * channels as usize).max(256);
+        // Never split a stereo (L,R) pair across WebSocket messages: keep the
+        // flush boundary on a whole interleaved frame.
+        if channels >= 2 && frame_samples % (channels as usize) != 0 {
+            frame_samples += (channels as usize) - (frame_samples % (channels as usize));
+        }
         let mut buf: Vec<i16> = Vec::with_capacity(frame_samples);
         // KeepAlive cadence: if we haven't sent audio in ~3s, ping.
         let mut ticks_since_audio: u32 = 0;
@@ -390,12 +417,20 @@ fn parse_transcript(txt: &str) -> Option<TranscriptUpdate> {
             return None;
         }
     }
-    let channel = msg.channel?;
-    let alt = channel.alternatives.into_iter().next()?;
+    // Which channel this result belongs to (multichannel mode). `channel_index`
+    // is [this_channel, total_channels]; we take the first. `None` in single
+    // channel mode.
+    let channel = msg
+        .channel_index
+        .as_ref()
+        .and_then(|ci| ci.first().copied());
+    let dg_channel = msg.channel?;
+    let alt = dg_channel.alternatives.into_iter().next()?;
     let speakers = group_speakers(&alt.words);
     Some(TranscriptUpdate {
         text: alt.transcript,
         is_final: msg.is_final.unwrap_or(false),
         speakers,
+        channel,
     })
 }

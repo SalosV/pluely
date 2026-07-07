@@ -190,14 +190,46 @@ export const SystemAudio = (props: useSystemAudioType) => {
       setIsPopoverOpen(true);
       return;
     }
+
+    // Live is a unified two-channel session that captures the microphone, which
+    // is a separate macOS permission from system-audio capture. Prompt for it up
+    // front so the user gets the OS dialog instead of a raw cpal failure.
+    const platform = navigator.platform.toLowerCase();
+    if (platform.includes("mac")) {
+      try {
+        const { checkMicrophonePermission, requestMicrophonePermission } =
+          await import("tauri-plugin-macos-permissions-api");
+        const hasMic = await checkMicrophonePermission();
+        if (!hasMic) {
+          await requestMicrophonePermission();
+          setLiveConfigError(
+            "Grant microphone access, then press Start again to begin the live session."
+          );
+          setIsPopoverOpen(true);
+          return;
+        }
+      } catch (err) {
+        console.error("Microphone permission check failed:", err);
+        // Non-fatal: fall through and let the backend surface any error.
+      }
+    }
     const deviceId =
       selectedAudioDevices.output.id &&
       selectedAudioDevices.output.id !== "default"
         ? selectedAudioDevices.output.id
         : undefined;
+    // Live is a unified two-channel session (#34): also pass the mic input so
+    // the backend captures "You" (mic, ch 0) alongside "Interlocutor" (system,
+    // ch 1). Falls back to the default input device if none is selected.
+    const inputDeviceId =
+      selectedAudioDevices.input.id &&
+      selectedAudioDevices.input.id !== "default"
+        ? selectedAudioDevices.input.id
+        : undefined;
     await dg.startStreaming(
-      { apiKey, model, language: "multi", diarize: true },
-      deviceId
+      { apiKey, model, language: "multi", diarize: false },
+      deviceId,
+      inputDeviceId
     );
   };
 
@@ -493,7 +525,7 @@ export const SystemAudio = (props: useSystemAudioType) => {
                     connected={dg.connected}
                     error={dg.error || liveConfigError}
                     finals={dg.finals}
-                    interim={dg.interim}
+                    interims={dg.interims}
                     onStart={startLive}
                     onStop={() => dg.stopStreaming()}
                   />

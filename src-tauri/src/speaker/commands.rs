@@ -150,15 +150,22 @@ pub async fn start_system_audio_capture(
     Ok(())
 }
 
-/// Start a Deepgram Live streaming session (#31/#32). Opens the system-audio
-/// stream and pipes its PCM to Deepgram over WebSocket, forwarding interim +
-/// final transcripts (with speaker labels) to the UI. Mutually exclusive with
-/// the batch capture: reuses the same stream_task slot.
+/// Start a Deepgram Live streaming session (#31/#32/#34). Live is always a
+/// UNIFIED two-channel session: it opens BOTH the microphone (channel 0 = "You")
+/// and the system-audio tap (channel 1 = "Interlocutor"), interleaves them into
+/// one stereo stream, and pipes that to Deepgram multichannel over WebSocket.
+/// Deepgram tags each result with its channel, so "You" vs "Interlocutor" is
+/// deterministic (not diarization-based). Mutually exclusive with the batch
+/// capture: reuses the same stream_task slot.
+///
+/// `device_id` selects the system output device (CoreAudio UID, as before);
+/// `input_device_id` selects the microphone (best-effort; falls back to default).
 #[tauri::command]
 pub async fn start_deepgram_streaming(
     app: AppHandle,
     config: crate::speaker::deepgram::DeepgramConfig,
     device_id: Option<String>,
+    input_device_id: Option<String>,
 ) -> Result<(), String> {
     let state = app.state::<crate::AudioState>();
 
@@ -173,11 +180,13 @@ pub async fn start_deepgram_streaming(
         }
     }
 
-    let input = SpeakerInput::new_with_device(device_id).map_err(|e| {
-        error!("Failed to create speaker input: {}", e);
-        format!("Failed to access system audio: {}", e)
+    // Build the unified stereo stream (mic + system). This is the single owner
+    // of BOTH the cpal mic stream and the CoreAudio tap; dropping it (when the
+    // spawned task ends/aborts) tears down both.
+    let stream = crate::speaker::DualStream::new(device_id, input_device_id).map_err(|e| {
+        error!("Failed to create unified audio stream: {}", e);
+        format!("Failed to access microphone + system audio: {}", e)
     })?;
-    let stream = input.stream();
     let sr = stream.sample_rate();
     if !(8000..=96000).contains(&sr) {
         return Err(format!(
@@ -206,6 +215,7 @@ pub async fn start_deepgram_streaming(
             app_clone.clone(),
             stream,
             sr,
+            2, // unified stereo: mic + system
             config,
             stop_for_task,
             notify_for_task,

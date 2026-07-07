@@ -1,45 +1,47 @@
 import { RadioIcon, Loader2, PlayIcon, SquareIcon } from "lucide-react";
 import { Button } from "@/components";
-import type { TranscriptEntry } from "@/hooks";
+import type { TranscriptEntry, InterimEntry } from "@/hooks";
 
 type Props = {
   isStreaming: boolean;
   connected: boolean;
   error: string;
   finals: TranscriptEntry[];
-  interim: string;
+  interims: InterimEntry[];
   onStart: () => void;
   onStop: () => void;
 };
 
-// Stable-ish color per speaker index for the diarization labels (#32).
-const SPEAKER_COLORS = [
-  "text-blue-500",
-  "text-green-500",
-  "text-purple-500",
-  "text-orange-500",
-  "text-pink-500",
-];
+// Unified two-channel Live session (#34): channel 0 = mic ("You"),
+// channel 1 = system ("Interlocutor"). Each source gets a stable label + color.
+function channelLabel(channel: number | null | undefined): string | null {
+  if (channel === 0) return "You";
+  if (channel === 1) return "Interlocutor";
+  return null; // single-channel fallback: no speaker label
+}
 
-function speakerColor(speaker: number) {
-  return SPEAKER_COLORS[speaker % SPEAKER_COLORS.length];
+function channelColor(channel: number | null | undefined): string {
+  if (channel === 0) return "text-blue-500"; // You
+  if (channel === 1) return "text-green-500"; // Interlocutor
+  return "text-muted-foreground";
 }
 
 /**
- * Live transcription view for Deepgram streaming (#31/#32). Renders finalized
- * turns (with per-speaker labels when diarization is on) plus the current
- * interim result, shown greyed-out as it's still being revised.
+ * Live transcription view for Deepgram streaming (#31/#32/#34). Renders
+ * finalized turns labeled by source ("You" / "Interlocutor" from the two-channel
+ * session) plus each channel's current interim result, shown greyed-out as it's
+ * still being revised.
  */
 export const LiveTranscription = ({
   isStreaming,
   connected,
   error,
   finals,
-  interim,
+  interims,
   onStart,
   onStop,
 }: Props) => {
-  const hasContent = finals.length > 0 || interim;
+  const hasContent = finals.length > 0 || interims.length > 0;
 
   return (
     <div className="rounded-lg border border-border/50 bg-muted/20 p-3 space-y-2">
@@ -89,7 +91,8 @@ export const LiveTranscription = ({
       {/* Idle hint when Live mode is selected but not started yet. */}
       {!isStreaming && !error && (
         <p className="text-[11px] text-muted-foreground italic">
-          Press Start to begin live transcription of system audio.
+          Press Start to begin the live session — it transcribes both you and the
+          other party from system audio.
         </p>
       )}
 
@@ -101,30 +104,38 @@ export const LiveTranscription = ({
 
       {hasContent && (
         <div className="space-y-1.5 text-[11px] leading-relaxed">
-          {finals.map((entry) =>
-            entry.speakers.length > 0 ? (
-              <div key={entry.id} className="space-y-0.5">
-                {entry.speakers.map((seg, i) => (
-                  <p key={i}>
-                    <span
-                      className={`font-semibold ${speakerColor(seg.speaker)}`}
-                    >
-                      Speaker {seg.speaker}:
-                    </span>{" "}
-                    <span className="text-foreground/85">{seg.text}</span>
-                  </p>
-                ))}
-              </div>
+          {finals.map((entry) => {
+            const label = channelLabel(entry.channel);
+            return label ? (
+              <p key={entry.id}>
+                <span className={`font-semibold ${channelColor(entry.channel)}`}>
+                  {label}:
+                </span>{" "}
+                <span className="text-foreground/85">{entry.text}</span>
+              </p>
             ) : (
               <p key={entry.id} className="text-foreground/85">
                 {entry.text}
               </p>
-            )
-          )}
-          {/* Interim (in-progress) result, greyed out. */}
-          {interim && (
-            <p className="text-muted-foreground/70 italic">{interim}</p>
-          )}
+            );
+          })}
+          {/* Interim (in-progress) results per channel, greyed out. */}
+          {interims.map((it) => {
+            const label = channelLabel(it.channel);
+            return (
+              <p
+                key={`interim-${it.channel}`}
+                className="text-muted-foreground/70 italic"
+              >
+                {label && (
+                  <span className={`font-semibold ${channelColor(it.channel)}`}>
+                    {label}:{" "}
+                  </span>
+                )}
+                {it.text}
+              </p>
+            );
+          })}
         </div>
       )}
     </div>
