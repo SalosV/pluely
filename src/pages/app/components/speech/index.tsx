@@ -136,10 +136,11 @@ export const SystemAudio = (props: useSystemAudioType) => {
         }
       }
 
-      // Capture screenshot
-      const base64: string = await invoke("capture_screenshot", {
-        screenId: null, // Use default screen
-      });
+      // Capture screenshot. The backend command is `capture_to_base64` (it
+      // captures the screen the overlay is on and returns base64) — the old
+      // `capture_screenshot` name never existed as a Tauri command, so this
+      // button used to throw "command not found" at runtime.
+      const base64: string = await invoke("capture_to_base64");
 
       setScreenshotImage(base64);
     } catch (err) {
