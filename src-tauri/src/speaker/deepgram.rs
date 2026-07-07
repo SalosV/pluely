@@ -173,6 +173,7 @@ pub async fn run_deepgram_streaming(
         Ok(r) => r,
         Err(e) => {
             let _ = app.emit("dg-error", format!("Invalid Deepgram URL: {e}"));
+            let _ = app.emit("dg-closed", ());
             return;
         }
     };
@@ -182,6 +183,9 @@ pub async fn run_deepgram_streaming(
         }
         Err(_) => {
             let _ = app.emit("dg-error", "Invalid Deepgram API key");
+            // Always emit dg-closed on exit so the UI can reset isStreaming;
+            // otherwise the "Live" toggle stays stuck disabled after a failure.
+            let _ = app.emit("dg-closed", ());
             return;
         }
     }
@@ -191,6 +195,7 @@ pub async fn run_deepgram_streaming(
         Ok((ws, _resp)) => ws,
         Err(e) => {
             let _ = app.emit("dg-error", format!("Deepgram connection failed: {e}"));
+            let _ = app.emit("dg-closed", ());
             return;
         }
     };

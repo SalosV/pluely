@@ -91,6 +91,11 @@ export function useDeepgramStreaming() {
         }),
         listen<string>("dg-error", (e) => {
           setError(e.payload || "Deepgram streaming error");
+          // An errored session is not an active session — reset so the "Live"
+          // toggle doesn't stay stuck disabled. (Rust also emits dg-closed on
+          // failure, but reset here too as a belt-and-suspenders.)
+          setConnected(false);
+          setIsStreaming(false);
         }),
         listen("dg-closed", () => {
           setConnected(false);

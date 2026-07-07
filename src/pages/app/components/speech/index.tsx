@@ -17,7 +17,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { ModeSwitcher } from "./ModeSwitcher";
+import { ModeSwitcher, type CaptureMode } from "./ModeSwitcher";
 import { RecordingPanel } from "./RecordingPanel";
 import { ResultsSection } from "./ResultsSection";
 import { PermissionFlow } from "./PermissionFlow";
@@ -86,10 +86,34 @@ export const SystemAudio = (props: useSystemAudioType) => {
   const setLiveMode = (value: boolean) => {
     setLiveModeState(value);
     localStorage.setItem("system_audio_live_mode", String(value));
+    // Turning Live off while a session is (or looks) active stops it, so the
+    // toggle can always recover from a stuck streaming state.
+    if (!value && dg.isStreaming) {
+      void dg.stopStreaming();
+    }
+    setLiveConfigError("");
   };
 
   const isVadMode = vadConfig.enabled;
   const hasResponse = hasAIResponse || isAIProcessing;
+
+  // The three capture modes are mutually exclusive, derived from the two
+  // underlying flags. Live takes precedence when on.
+  const captureMode: CaptureMode = liveMode
+    ? "live"
+    : isVadMode
+    ? "auto"
+    : "manual";
+
+  const handleModeChange = (next: CaptureMode) => {
+    if (next === captureMode) return;
+    if (next === "live") {
+      setLiveMode(true);
+    } else {
+      setLiveMode(false);
+      updateVadConfiguration({ ...vadConfig, enabled: next === "auto" });
+    }
+  };
 
   // Keyboard shortcut for Cmd+K to toggle view mode
   useEffect(() => {
@@ -146,13 +170,6 @@ export const SystemAudio = (props: useSystemAudioType) => {
     } else {
       await startCapture();
     }
-  };
-
-  const handleModeChange = (vadEnabled: boolean) => {
-    updateVadConfiguration({
-      ...vadConfig,
-      enabled: vadEnabled,
-    });
   };
 
   // Capture screenshot functionality
@@ -253,56 +270,37 @@ export const SystemAudio = (props: useSystemAudioType) => {
             {/* Header - Mode Switcher + Actions */}
             <div className="flex-shrink-0 p-3 border-b border-border/50">
               <div className="flex items-center justify-between gap-2">
-                {/* Mode Switcher + Auto-respond toggle (Auto-detect only, #25) */}
+                {/* One selector for the 3 mutually-exclusive capture modes,
+                    plus the Auto-respond modifier which only applies to
+                    Auto-detect (#25). Mode can't be switched mid-session. */}
                 {!setupRequired && (
                   <div className="flex items-center gap-2 min-w-0">
-                    {!liveMode && (
-                      <>
-                        <ModeSwitcher
-                          isVadMode={isVadMode}
-                          onModeChange={handleModeChange}
-                          disabled={
-                            isRecordingInContinuousMode ||
-                            isProcessing ||
-                            isAIProcessing
-                          }
+                    <ModeSwitcher
+                      mode={captureMode}
+                      onModeChange={handleModeChange}
+                      disabled={
+                        capturing ||
+                        dg.isStreaming ||
+                        isRecordingInContinuousMode ||
+                        isProcessing ||
+                        isAIProcessing
+                      }
+                    />
+                    {captureMode === "auto" && (
+                      <label
+                        className="flex items-center gap-1.5 cursor-pointer select-none"
+                        title="When off, speech is only transcribed into a timeline; press the system-audio hotkey to ask the AI"
+                      >
+                        <Switch
+                          checked={autoRespond}
+                          onCheckedChange={setAutoRespond}
+                          className="scale-75"
                         />
-                        {isVadMode && (
-                          <label
-                            className="flex items-center gap-1.5 cursor-pointer select-none"
-                            title="When off, speech is only transcribed into a timeline; press the system-audio hotkey to ask the AI"
-                          >
-                            <Switch
-                              checked={autoRespond}
-                              onCheckedChange={setAutoRespond}
-                              className="scale-75"
-                            />
-                            <span className="text-[10px] text-muted-foreground whitespace-nowrap">
-                              Auto-respond
-                            </span>
-                          </label>
-                        )}
-                      </>
+                        <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                          Auto-respond
+                        </span>
+                      </label>
                     )}
-                    <label
-                      className={cn(
-                        "flex items-center gap-1.5 select-none",
-                        capturing || dg.isStreaming
-                          ? "opacity-50 cursor-not-allowed"
-                          : "cursor-pointer"
-                      )}
-                      title="Stream to Deepgram for live transcription with speaker labels (instead of recording segments)"
-                    >
-                      <Switch
-                        checked={liveMode}
-                        onCheckedChange={setLiveMode}
-                        disabled={capturing || dg.isStreaming}
-                        className="scale-75"
-                      />
-                      <span className="text-[10px] text-muted-foreground whitespace-nowrap">
-                        Live
-                      </span>
-                    </label>
                   </div>
                 )}
                 {setupRequired && (
