@@ -29,7 +29,10 @@ export const useWindowResize = () => {
         return;
       }
 
-      const newHeight = expanded ? 600 : 54;
+      // Expanded height: tall enough to read a live transcript AND an AI
+      // response comfortably (esp. in hands-free). Kept under ~800 so it fits on
+      // typical laptop screens without running off the bottom.
+      const newHeight = expanded ? 760 : 54;
 
       await invoke("set_window_height", {
         window,
