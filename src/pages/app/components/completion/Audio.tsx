@@ -1,8 +1,16 @@
 import { InfoIcon, MicIcon } from "lucide-react";
+import { lazy, Suspense } from "react";
 import { Popover, PopoverContent, PopoverTrigger, Button } from "@/components";
-import { AutoSpeechVAD } from "./AutoSpeechVad";
 import { UseCompletionReturn } from "@/types";
 import { useApp } from "@/contexts";
+
+// AutoSpeechVAD pulls in @ricky0123/vad-react + onnxruntime-web (~550 KB of
+// WASM/JS) which are only needed when the mic VAD is actually active. Lazy-load
+// it so that weight stays out of the initial overlay bundle and is fetched only
+// when the user has a speech provider configured AND enables voice input.
+const AutoSpeechVAD = lazy(() =>
+  import("./AutoSpeechVad").then((m) => ({ default: m.AutoSpeechVAD }))
+);
 
 export const Audio = ({
   micOpen,
@@ -20,13 +28,25 @@ export const Audio = ({
     <Popover open={micOpen} onOpenChange={setMicOpen}>
       <PopoverTrigger asChild>
         {speechProviderStatus && enableVAD ? (
-          <AutoSpeechVAD
-            key={selectedAudioDevices.input.id}
-            submit={submit}
-            setState={setState}
-            setEnableVAD={setEnableVAD}
-            microphoneDeviceId={selectedAudioDevices.input.id}
-          />
+          <Suspense
+            fallback={
+              <Button
+                size="icon"
+                className="cursor-pointer"
+                title="Loading voice input…"
+              >
+                <MicIcon className="h-4 w-4 animate-pulse" />
+              </Button>
+            }
+          >
+            <AutoSpeechVAD
+              key={selectedAudioDevices.input.id}
+              submit={submit}
+              setState={setState}
+              setEnableVAD={setEnableVAD}
+              microphoneDeviceId={selectedAudioDevices.input.id}
+            />
+          </Suspense>
         ) : (
           <Button
             size="icon"

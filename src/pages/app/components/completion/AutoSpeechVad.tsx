@@ -32,6 +32,11 @@ const AutoSpeechVADInternal = ({
     userSpeakingThreshold: 0.6,
     startOnLoad: true,
     additionalAudioConstraints: audioConstraints,
+    // Load the model, worklet and onnxruntime WASM from bundled local assets
+    // (public/vad, copied at build by the copy-vad-assets Vite plugin) instead
+    // of the default jsdelivr CDN, which is unreachable in the packaged app.
+    baseAssetPath: "/vad/",
+    onnxWASMBasePath: "/vad/",
     onSpeechEnd: async (audio) => {
       try {
         // convert float32array to blob

@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# VAD model/worklet/WASM binaries — regenerated into public/vad on every build
+# by the copy-vad-assets Vite plugin (see vite.config.ts). Not versioned.
+public/vad/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

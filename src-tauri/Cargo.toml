@@ -60,3 +60,13 @@ libpulse-simple-binding = "2.29.0"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-autostart = "2.5.0"
+
+# Release profile tuned for a small, fast binary. The default release profile
+# ships a ~23 MB binary with no LTO or symbol stripping; these settings trade a
+# longer compile for a substantially smaller, faster artifact.
+[profile.release]
+opt-level = "s"     # optimize for size (biggest win for a GUI app)
+lto = true          # link-time optimization across crates
+codegen-units = 1   # maximize cross-unit optimization (slower build)
+strip = true        # strip symbols from the final binary
+panic = "abort"     # no unwinding tables; smaller binary
