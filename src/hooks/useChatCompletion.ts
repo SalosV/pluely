@@ -87,10 +87,15 @@ export const useChatCompletion = (
     screenshotConfigRef.current = screenshotConfiguration;
   }, [screenshotConfiguration]);
 
-  const scrollToBottom = () => {
+  // `smooth` defaults to true for one-shot jumps (e.g. on load). During
+  // streaming pass smooth=false: a smooth scrollIntoView restarts its animation
+  // on every chunk (~47/s), which stutters instead of tracking the text.
+  const scrollToBottom = (smooth = true) => {
     const responseSettings = getResponseSettings();
     if (responseSettings.autoScroll) {
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      messagesEndRef.current?.scrollIntoView({
+        behavior: smooth ? "smooth" : "auto",
+      });
     }
   };
 
@@ -275,8 +280,8 @@ export const useChatCompletion = (
 
             setMessages(updatedWithResponse);
 
-            // Auto-scroll during streaming
-            scrollToBottom();
+            // Auto-scroll during streaming (non-smooth to avoid per-chunk jank)
+            scrollToBottom(false);
           }
         } catch (e: any) {
           // Only show error if this is still the current request and not aborted

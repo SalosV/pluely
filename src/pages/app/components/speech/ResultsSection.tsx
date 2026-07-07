@@ -2,10 +2,10 @@ import { ChatConversation } from "@/types";
 import { Markdown, Switch, CopyButton } from "@/components";
 import { BotIcon, HeadphonesIcon, Loader2, SparklesIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useStreamingResponse } from "@/hooks";
 
 type Props = {
   lastTranscription: string;
-  lastAIResponse: string;
   isAIProcessing: boolean;
   conversation: ChatConversation;
   conversationMode: boolean;
@@ -14,12 +14,14 @@ type Props = {
 
 export const ResultsSection = ({
   lastTranscription,
-  lastAIResponse,
   isAIProcessing,
   conversation,
   conversationMode,
   setConversationMode,
 }: Props) => {
+  // Subscribe to the streaming text here — this is the only component that
+  // re-renders per token; the rest of the overlay stays put.
+  const lastAIResponse = useStreamingResponse();
   const hasResponse = lastAIResponse || isAIProcessing;
   const hasHistory = conversation.messages.length > 2;
 

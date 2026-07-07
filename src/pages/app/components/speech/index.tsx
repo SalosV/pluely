@@ -31,7 +31,7 @@ export const SystemAudio = (props: useSystemAudioType) => {
     isProcessing,
     isAIProcessing,
     lastTranscription,
-    lastAIResponse,
+    hasAIResponse,
     error,
     setupRequired,
     startCapture,
@@ -69,7 +69,7 @@ export const SystemAudio = (props: useSystemAudioType) => {
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
 
   const isVadMode = vadConfig.enabled;
-  const hasResponse = lastAIResponse || isAIProcessing;
+  const hasResponse = hasAIResponse || isAIProcessing;
 
   // Keyboard shortcut for Cmd+K to toggle view mode
   useEffect(() => {
@@ -341,10 +341,9 @@ export const SystemAudio = (props: useSystemAudioType) => {
                       onIgnore={ignoreContinuousRecording}
                     />
 
-                    {/* AI Response */}
+                    {/* AI Response — reads streaming text from the store itself */}
                     <ResultsSection
                       lastTranscription={lastTranscription}
-                      lastAIResponse={lastAIResponse}
                       isAIProcessing={isAIProcessing}
                       conversation={conversation}
                       conversationMode={conversationMode}

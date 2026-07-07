@@ -786,9 +786,12 @@ export const useCompletion = () => {
         "[data-radix-scroll-area-viewport]"
       );
       if (scrollElement) {
+        // "auto" (not "smooth"): this effect fires on every streaming chunk, and
+        // a smooth scroll restarts its animation each time, producing jank
+        // instead of smoothly following the growing response.
         scrollElement.scrollTo({
           top: scrollElement.scrollHeight,
-          behavior: "smooth",
+          behavior: "auto",
         });
       }
     }

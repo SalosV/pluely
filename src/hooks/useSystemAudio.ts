@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useWindowResize, useGlobalShortcuts } from ".";
+import { setStreamingResponse } from "./useStreamingResponse";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useApp } from "@/contexts";
@@ -51,7 +52,11 @@ export function useSystemAudio() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isAIProcessing, setIsAIProcessing] = useState(false);
   const [lastTranscription, setLastTranscription] = useState<string>("");
-  const [lastAIResponse, setLastAIResponse] = useState<string>("");
+  // The streaming response TEXT lives in an external store (useStreamingResponse)
+  // so appending tokens doesn't re-render the whole overlay. Here we only keep a
+  // lightweight boolean for show/hide + resize logic, which flips at most twice
+  // per response instead of once per token.
+  const [hasAIResponse, setHasAIResponse] = useState<boolean>(false);
   const [error, setError] = useState<string>("");
   const [setupRequired, setSetupRequired] = useState<boolean>(false);
   const [quickActions, setQuickActions] = useState<string[]>([]);
@@ -349,10 +354,12 @@ export function useSystemAudio() {
 
       try {
         setIsAIProcessing(true);
-        setLastAIResponse("");
+        setStreamingResponse("");
+        setHasAIResponse(false);
         setError("");
 
         let fullResponse = "";
+        let hasResponseYet = false;
 
         if (!selectedAIProvider.provider) {
           setError("No AI provider selected.");
@@ -379,7 +386,13 @@ export function useSystemAudio() {
           })) {
             if (signal.aborted) break;
             fullResponse += chunk;
-            setLastAIResponse((prev) => prev + chunk);
+            // Text goes to the external store (per-token, no overlay re-render).
+            setStreamingResponse(fullResponse);
+            // Flip the boolean only on the first chunk.
+            if (!hasResponseYet) {
+              hasResponseYet = true;
+              setHasAIResponse(true);
+            }
           }
         } catch (aiError: any) {
           if (signal.aborted) return;
@@ -604,7 +617,8 @@ export function useSystemAudio() {
       setIsRecordingInContinuousMode(false);
       setRecordingProgress(0);
       setLastTranscription("");
-      setLastAIResponse("");
+      setStreamingResponse("");
+      setHasAIResponse(false);
       setError("");
       setIsPopoverOpen(false);
     } catch (err) {
@@ -660,20 +674,20 @@ export function useSystemAudio() {
     }
   }, [startCapture]);
 
+  // `hasAIResponse` is a boolean state that flips at most twice per response
+  // (see processWithAI), so this effect and its resizeWindow IPC call no longer
+  // fire on every streaming token — the response text now lives in an external
+  // store instead of driving this component's state.
   useEffect(() => {
     const shouldOpenPopover =
-      capturing ||
-      setupRequired ||
-      isAIProcessing ||
-      !!lastAIResponse ||
-      !!error;
+      capturing || setupRequired || isAIProcessing || hasAIResponse || !!error;
     setIsPopoverOpen(shouldOpenPopover);
     resizeWindow(shouldOpenPopover);
   }, [
     capturing,
     setupRequired,
     isAIProcessing,
-    lastAIResponse,
+    hasAIResponse,
     error,
     resizeWindow,
   ]);
@@ -752,7 +766,8 @@ export function useSystemAudio() {
       updatedAt: 0,
     });
     setLastTranscription("");
-    setLastAIResponse("");
+    setStreamingResponse("");
+    setHasAIResponse(false);
     setError("");
     setSetupRequired(false);
     setIsProcessing(false);
@@ -854,7 +869,10 @@ export function useSystemAudio() {
     isProcessing,
     isAIProcessing,
     lastTranscription,
-    lastAIResponse,
+    // Streaming response text is NOT returned here — consumers read it from the
+    // useStreamingResponse store so per-token updates don't re-render this tree.
+    // Only the boolean is exposed for show/hide logic.
+    hasAIResponse,
     error,
     setupRequired,
     startCapture,
