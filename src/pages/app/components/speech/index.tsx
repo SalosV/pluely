@@ -115,6 +115,9 @@ export const SystemAudio = (props: useSystemAudioType) => {
     }
     if (next === "live") {
       setLiveMode(true);
+      // stopCapture() above closes the popover; reopen it so the Live panel
+      // (with its Start button and any config error) stays visible.
+      setIsPopoverOpen(true);
     } else {
       setLiveMode(false);
       updateVadConfiguration({ ...vadConfig, enabled: next === "auto" });
@@ -144,29 +147,38 @@ export const SystemAudio = (props: useSystemAudioType) => {
     }
   }, [isProcessing, screenshotImage]);
 
+  // Start a Deepgram live session using the configured provider's key/model.
+  const startLive = async () => {
+    setLiveConfigError("");
+    const apiKey = selectedSttProvider.variables["api_key"];
+    const model = selectedSttProvider.variables["model"] || "nova-3";
+    if (!apiKey) {
+      setLiveConfigError(
+        "Set a Deepgram API key in Settings to use Live mode."
+      );
+      setIsPopoverOpen(true);
+      return;
+    }
+    const deviceId =
+      selectedAudioDevices.output.id &&
+      selectedAudioDevices.output.id !== "default"
+        ? selectedAudioDevices.output.id
+        : undefined;
+    await dg.startStreaming(
+      { apiKey, model, language: "multi", diarize: true },
+      deviceId
+    );
+  };
+
   const handleToggleCapture = async () => {
     if (liveMode) {
+      // The Live panel has its own Start/Stop, but the header button should
+      // still open the panel (and start/stop as a convenience).
+      setIsPopoverOpen(true);
       if (dg.isStreaming) {
         await dg.stopStreaming();
       } else {
-        setLiveConfigError("");
-        const apiKey = selectedSttProvider.variables["api_key"];
-        const model = selectedSttProvider.variables["model"] || "nova-3";
-        if (!apiKey) {
-          setLiveConfigError(
-            "Set a Deepgram API key in Settings to use Live mode."
-          );
-          return;
-        }
-        const deviceId =
-          selectedAudioDevices.output.id &&
-          selectedAudioDevices.output.id !== "default"
-            ? selectedAudioDevices.output.id
-            : undefined;
-        await dg.startStreaming(
-          { apiKey, model, language: "multi", diarize: true },
-          deviceId
-        );
+        await startLive();
       }
       return;
     }
@@ -265,7 +277,11 @@ export const SystemAudio = (props: useSystemAudioType) => {
         </Button>
       </PopoverTrigger>
 
-      {(capturing || dg.isStreaming || setupRequired || error) && (
+      {(capturing ||
+        dg.isStreaming ||
+        liveMode ||
+        setupRequired ||
+        error) && (
         <PopoverContent
           align="end"
           side="bottom"
@@ -437,10 +453,13 @@ export const SystemAudio = (props: useSystemAudioType) => {
                   />
                 ) : liveMode ? (
                   <LiveTranscription
+                    isStreaming={dg.isStreaming}
                     connected={dg.connected}
                     error={dg.error || liveConfigError}
                     finals={dg.finals}
                     interim={dg.interim}
+                    onStart={startLive}
+                    onStop={() => dg.stopStreaming()}
                   />
                 ) : (
                   <>
