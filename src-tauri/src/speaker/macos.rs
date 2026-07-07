@@ -3,14 +3,15 @@ use super::AudioDevice;
 use anyhow::Result;
 use ca::aggregate_device_keys as agg_keys;
 use cidre::{arc, av, cat, cf, core_audio as ca, ns, os};
+use futures_util::task::AtomicWaker;
 use futures_util::Stream;
 use ringbuf::{
     traits::{Consumer, Producer, Split},
     HeapCons, HeapProd, HeapRb,
 };
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
-use std::task::{Poll, Waker};
+use std::sync::Arc;
+use std::task::Poll;
 use tracing::error;
 
 pub fn get_input_devices() -> Result<Vec<AudioDevice>> {
@@ -139,9 +140,13 @@ pub struct SpeakerInput {
     agg_desc: arc::Retained<cf::DictionaryOf<cf::String, cf::Type>>,
 }
 
-struct WakerState {
-    waker: Option<Waker>,
-    has_data: bool,
+/// Lock-free wake coordination between the real-time audio IO thread (producer)
+/// and the async consumer. Replaces an `Arc<Mutex<WakerState>>` so the RT
+/// callback never takes a lock — `AtomicWaker` is designed exactly for the
+/// single-producer/single-consumer wake handoff.
+struct WakerSync {
+    waker: AtomicWaker,
+    has_data: AtomicBool,
 }
 
 pub struct SpeakerStream {
@@ -149,7 +154,7 @@ pub struct SpeakerStream {
     _device: ca::hardware::StartedDevice<ca::AggregateDevice>,
     _ctx: Box<Ctx>,
     _tap: ca::TapGuard,
-    waker_state: Arc<Mutex<WakerState>>,
+    waker_sync: Arc<WakerSync>,
     current_sample_rate: Arc<AtomicU32>,
 }
 
@@ -162,8 +167,10 @@ impl SpeakerStream {
 struct Ctx {
     format: arc::R<av::AudioFormat>,
     producer: HeapProd<f32>,
-    waker_state: Arc<Mutex<WakerState>>,
-    current_sample_rate: Arc<AtomicU32>,
+    waker_sync: Arc<WakerSync>,
+    // NOTE: current_sample_rate used to live here too, updated per callback.
+    // Since the RT callback no longer queries the HAL, only SpeakerStream keeps
+    // it (initialized from the ASBD at stream() time).
     consecutive_drops: Arc<AtomicU32>,
     should_terminate: Arc<AtomicBool>,
 }
@@ -227,8 +234,14 @@ impl SpeakerInput {
         &self,
         ctx: &mut Box<Ctx>,
     ) -> Result<ca::hardware::StartedDevice<ca::AggregateDevice>> {
+        // NOTE: the device parameter is intentionally unused (`_device`). We do
+        // NOT query device.actual_sample_rate() in this callback: it runs on the
+        // CoreAudio real-time IO thread (~94×/s), and querying the HAL on the RT
+        // path can block and glitch audio. The sample rate was already read from
+        // the ASBD in stream() and stored in current_sample_rate; it does not
+        // change mid-stream.
         extern "C" fn proc(
-            device: ca::Device,
+            _device: ca::Device,
             _now: &cat::AudioTimeStamp,
             input_data: &cat::AudioBufList<1>,
             _input_time: &cat::AudioTimeStamp,
@@ -237,13 +250,6 @@ impl SpeakerInput {
             ctx: Option<&mut Ctx>,
         ) -> os::Status {
             let ctx = ctx.unwrap();
-
-            ctx.current_sample_rate.store(
-                device
-                    .actual_sample_rate()
-                    .unwrap_or(ctx.format.absd().sample_rate) as u32,
-                Ordering::Release,
-            );
 
             if let Some(view) =
                 av::AudioPcmBuf::with_buf_list_no_copy(&ctx.format, input_data, None)
@@ -283,18 +289,17 @@ impl SpeakerInput {
         let rb = HeapRb::<f32>::new(buffer_size);
         let (producer, consumer) = rb.split();
 
-        let waker_state = Arc::new(Mutex::new(WakerState {
-            waker: None,
-            has_data: false,
-        }));
+        let waker_sync = Arc::new(WakerSync {
+            waker: AtomicWaker::new(),
+            has_data: AtomicBool::new(false),
+        });
 
         let current_sample_rate = Arc::new(AtomicU32::new(asbd.sample_rate as u32));
 
         let mut ctx = Box::new(Ctx {
             format,
             producer,
-            waker_state: waker_state.clone(),
-            current_sample_rate: current_sample_rate.clone(),
+            waker_sync: waker_sync.clone(),
             consecutive_drops: Arc::new(AtomicU32::new(0)),
             should_terminate: Arc::new(AtomicBool::new(false)),
         });
@@ -306,7 +311,7 @@ impl SpeakerInput {
             _device: device,
             _ctx: ctx,
             _tap: self.tap,
-            waker_state,
+            waker_sync,
             current_sample_rate,
         }
     }
@@ -335,20 +340,11 @@ fn process_audio_data(ctx: &mut Ctx, data: &[f32]) {
         ctx.consecutive_drops.store(0, Ordering::Release);
     }
 
-    // Wake up consumer if we have new data
-    let should_wake = {
-        let mut waker_state = ctx.waker_state.lock().unwrap();
-        if !waker_state.has_data {
-            waker_state.has_data = true;
-            waker_state.waker.take()
-        } else {
-            None
-        }
-    };
-
-    if let Some(waker) = should_wake {
-        waker.wake();
-    }
+    // Wake up consumer if we have new data. Lock-free: mark data available and
+    // wake the registered waker. AtomicWaker::wake() is a no-op if no waker is
+    // registered, so a spurious wake is harmless.
+    ctx.waker_sync.has_data.store(true, Ordering::Release);
+    ctx.waker_sync.waker.wake();
 }
 
 impl Stream for SpeakerStream {
@@ -369,10 +365,22 @@ impl Stream for SpeakerStream {
             };
         }
 
-        {
-            let mut state = self.waker_state.lock().unwrap();
-            state.has_data = false;
-            state.waker = Some(cx.waker().clone());
+        // Register our waker, then re-check for data. This ordering is what
+        // makes the lock-free handoff safe: if the producer pushes + wakes
+        // between the try_pop above and register() here, register() sees the
+        // fresh waker on the next wake, and the re-check below catches data that
+        // landed in the window — so we never sleep on already-available data.
+        self.waker_sync.has_data.store(false, Ordering::Release);
+        self.waker_sync.waker.register(cx.waker());
+
+        if let Some(sample) = self.consumer.try_pop() {
+            return Poll::Ready(Some(sample));
+        }
+
+        if self.waker_sync.has_data.load(Ordering::Acquire) {
+            // Producer signalled data after our store above; poll again instead
+            // of sleeping.
+            cx.waker().wake_by_ref();
         }
 
         Poll::Pending

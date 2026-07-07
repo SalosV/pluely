@@ -44,6 +44,25 @@ impl Default for VadConfig {
     }
 }
 
+/// RAII guard that unregisters a Tauri event listener when dropped.
+///
+/// This makes listener cleanup robust against task cancellation: when the
+/// capture task is aborted at an await point, its locals (including this guard)
+/// are dropped, so the listener is removed even though the explicit cleanup path
+/// never runs.
+struct ListenerGuard {
+    app: AppHandle,
+    id: Option<tauri::EventId>,
+}
+
+impl Drop for ListenerGuard {
+    fn drop(&mut self) {
+        if let Some(id) = self.id.take() {
+            self.app.unlisten(id);
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn start_system_audio_capture(
     app: AppHandle,
@@ -148,20 +167,24 @@ async fn run_vad_capture(
     let mut speech_chunks = 0;
     let max_samples = sr as usize * 30; // 30s safety cap per utterance
 
+    // Scratch buffer reused across chunks — cleared and refilled each iteration
+    // instead of allocating a new Vec per chunk (this loop runs ~94×/s).
+    let mut mono: Vec<f32> = Vec::with_capacity(config.hop_size);
+
     while let Some(sample) = stream.next().await {
         buffer.push_back(sample);
 
         // Process in fixed chunks for VAD analysis
         while buffer.len() >= config.hop_size {
-            let mut mono = Vec::with_capacity(config.hop_size);
+            mono.clear();
             for _ in 0..config.hop_size {
                 if let Some(v) = buffer.pop_front() {
                     mono.push(v);
                 }
             }
 
-            // Apply noise gate BEFORE VAD (critical for accuracy)
-            let mono = apply_noise_gate(&mono, config.noise_gate_threshold);
+            // Apply noise gate BEFORE VAD (critical for accuracy), in place.
+            apply_noise_gate_in_place(&mut mono, config.noise_gate_threshold);
 
             let (rms, peak) = calculate_audio_metrics(&mono);
             let is_speech = rms > config.sensitivity_rms || peak > config.peak_threshold;
@@ -189,7 +212,10 @@ async fn run_vad_capture(
                         // let duration = speech_buffer.len() as f32 / sr as f32;
                         let _ = app.emit("speech-detected", b64);
                     }
-                    speech_buffer.clear();
+                    // Reallocate rather than clear(): drops the (large) capacity
+                    // so a single long utterance doesn't keep that memory pinned
+                    // for the rest of the session.
+                    speech_buffer = Vec::new();
                     in_speech = false;
                     speech_chunks = 0;
                 }
@@ -231,24 +257,24 @@ async fn run_vad_capture(
                             );
                         }
 
-                        // Reset for next speech detection
-                        speech_buffer.clear();
+                        // Reset for next speech detection. Reallocate (not
+                        // clear) to release the emitted segment's capacity.
+                        speech_buffer = Vec::new();
                         in_speech = false;
                         silence_chunks = 0;
                         speech_chunks = 0;
                     }
                 } else {
-                    // Not in speech yet - maintain rolling pre-speech buffer
-                    pre_speech.extend(mono.into_iter());
+                    // Not in speech yet - maintain rolling pre-speech buffer.
+                    // Copy from the scratch slice (it's reused next iteration).
+                    pre_speech.extend(mono.iter().copied());
 
-                    // Trim excess (maintain fixed size)
+                    // Trim excess (maintain fixed size). The rolling buffer is
+                    // already bounded by this pop_front, so no shrink_to_fit is
+                    // needed — it was reallocating + memcpy'ing on every silence
+                    // chunk (the dominant state), for no benefit.
                     while pre_speech.len() > config.pre_speech_chunks * config.hop_size {
                         pre_speech.pop_front();
-                    }
-
-                    // Periodically shrink capacity to prevent memory bloat
-                    if pre_speech.len() == config.pre_speech_chunks * config.hop_size {
-                        pre_speech.shrink_to_fit();
                     }
                 }
             }
@@ -266,8 +292,11 @@ async fn run_continuous_capture(
     let mut stream = stream;
     let max_samples = (sr as u64 * config.max_recording_duration_secs) as usize;
 
-    // Pre-allocate buffer to prevent reallocations
-    let mut audio_buffer = Vec::with_capacity(max_samples);
+    // Start with ~30s of capacity and let the Vec grow on demand, instead of
+    // eagerly reserving the full max_recording_duration (which for a large
+    // configured cap could reserve hundreds of MB up front, most of it unused).
+    let initial_capacity = (sr as usize * 30).min(max_samples);
+    let mut audio_buffer = Vec::with_capacity(initial_capacity);
     let start_time = Instant::now();
     let max_duration = Duration::from_secs(config.max_recording_duration_secs);
 
@@ -275,10 +304,18 @@ async fn run_continuous_capture(
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stop_flag_for_listener = stop_flag.clone();
 
-    // Listen for manual stop event
+    // Listen for manual stop event. Wrapped in a Drop guard so the listener is
+    // always unregistered when this task ends — including when it is cancelled
+    // via task.abort() at an await point (stop_system_audio_capture does this),
+    // where the explicit unlisten below would otherwise be skipped and leak the
+    // listener across capture sessions.
     let stop_listener = app.listen("manual-stop-continuous", move |_| {
         stop_flag_for_listener.store(true, Ordering::Release);
     });
+    let _listener_guard = ListenerGuard {
+        app: app.clone(),
+        id: Some(stop_listener),
+    };
 
     // Emit recording started
     let _ = app.emit(
@@ -331,18 +368,20 @@ async fn run_continuous_capture(
         }
     }
 
-    // Clean up event listener (CRITICAL)
-    app.unlisten(stop_listener);
+    // The listener is unregistered by _listener_guard's Drop when this task
+    // ends (normal return OR cancellation), so no explicit unlisten here.
 
     // Process and emit audio
     if !audio_buffer.is_empty() {
         // let duration = start_time.elapsed().as_secs_f32();
 
-        // Apply noise gate
-        let cleaned_audio = apply_noise_gate(&audio_buffer, config.noise_gate_threshold);
-        let cleaned_audio = normalize_audio_level(&cleaned_audio, 0.1);
+        // Clean + normalize in place — no extra full-size copies of the
+        // (potentially minutes-long) recording.
+        apply_noise_gate_in_place(&mut audio_buffer, config.noise_gate_threshold);
+        normalize_audio_level_in_place(&mut audio_buffer, 0.1);
+        let cleaned_audio = &audio_buffer;
 
-        match samples_to_wav_b64(sr, &cleaned_audio) {
+        match samples_to_wav_b64(sr, cleaned_audio) {
             Ok(b64) => {
                 let _ = app.emit("speech-detected", b64);
             }
@@ -359,21 +398,18 @@ async fn run_continuous_capture(
     let _ = app.emit("continuous-recording-stopped", ());
 }
 
-// Apply noise gate
-fn apply_noise_gate(samples: &[f32], threshold: f32) -> Vec<f32> {
+// Apply the soft-knee noise gate in place, mutating the slice. Used in the hot
+// VAD loop (once per chunk, ~94×/s) where allocating a fresh Vec per chunk was
+// pure churn (~2.75 GB/h in active mode).
+fn apply_noise_gate_in_place(samples: &mut [f32], threshold: f32) {
     const KNEE_RATIO: f32 = 3.0; // Compression ratio for soft knee
 
-    samples
-        .iter()
-        .map(|&s| {
-            let abs = s.abs();
-            if abs < threshold {
-                s * (abs / threshold).powf(1.0 / KNEE_RATIO)
-            } else {
-                s
-            }
-        })
-        .collect()
+    for s in samples.iter_mut() {
+        let abs = s.abs();
+        if abs < threshold {
+            *s *= (abs / threshold).powf(1.0 / KNEE_RATIO);
+        }
+    }
 }
 
 // Calculate RMS and peak (optimized)
@@ -418,6 +454,33 @@ fn normalize_audio_level(samples: &[f32], target_rms: f32) -> Vec<f32> {
         .collect()
 }
 
+// In-place normalization, mutating the slice. Used by continuous capture at
+// end-of-recording to avoid allocating a fresh Vec the size of the whole
+// recording (potentially minutes of audio).
+fn normalize_audio_level_in_place(samples: &mut [f32], target_rms: f32) {
+    if samples.is_empty() {
+        return;
+    }
+
+    let sum_squares: f32 = samples.iter().map(|&s| s * s).sum();
+    let current_rms = (sum_squares / samples.len() as f32).sqrt();
+
+    if current_rms < 0.001 {
+        return;
+    }
+
+    let gain = (target_rms / current_rms).min(10.0);
+
+    for s in samples.iter_mut() {
+        let amplified = *s * gain;
+        *s = if amplified.abs() > 1.0 {
+            amplified.signum() * (1.0 - (-amplified.abs()).exp())
+        } else {
+            amplified
+        };
+    }
+}
+
 // Convert samples to WAV base64 (with proper error handling)
 fn samples_to_wav_b64(sample_rate: u32, mono_f32: &[f32]) -> Result<String, String> {
     // Validate sample rate
@@ -434,7 +497,9 @@ fn samples_to_wav_b64(sample_rate: u32, mono_f32: &[f32]) -> Result<String, Stri
         return Err("Empty audio buffer".to_string());
     }
 
-    let mut cursor = Cursor::new(Vec::new());
+    // Pre-size the output: 44-byte WAV header + 2 bytes per i16 sample. Avoids
+    // repeated reallocations of the backing Vec as the WAV is written.
+    let mut cursor = Cursor::new(Vec::with_capacity(44 + mono_f32.len() * 2));
     let spec = WavSpec {
         channels: 1,
         sample_rate,
@@ -447,10 +512,15 @@ fn samples_to_wav_b64(sample_rate: u32, mono_f32: &[f32]) -> Result<String, Stri
         e.to_string()
     })?;
 
-    for &s in mono_f32 {
-        let clamped = s.clamp(-1.0, 1.0);
-        let sample_i16 = (clamped * i16::MAX as f32) as i16;
-        writer.write_sample(sample_i16).map_err(|e| e.to_string())?;
+    // Block writer: buffers all samples and writes them in one pass, instead of
+    // a fallible write per sample.
+    {
+        let mut sample_writer = writer.get_i16_writer(mono_f32.len() as u32);
+        for &s in mono_f32 {
+            let clamped = s.clamp(-1.0, 1.0);
+            sample_writer.write_sample((clamped * i16::MAX as f32) as i16);
+        }
+        sample_writer.flush().map_err(|e| e.to_string())?;
     }
 
     writer.finalize().map_err(|e| e.to_string())?;
