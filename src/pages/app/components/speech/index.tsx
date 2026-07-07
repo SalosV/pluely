@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect } from "react";
 import {
   Button,
   Popover,
-  PopoverTrigger,
+  PopoverAnchor,
   PopoverContent,
   ScrollArea,
   Switch,
@@ -263,7 +263,12 @@ export const SystemAudio = (props: useSystemAudioType) => {
         setIsPopoverOpen(open);
       }}
     >
-      <PopoverTrigger asChild>
+      {/* Anchor (not Trigger): the button does NOT toggle the popover itself —
+          that fought with handleToggleCapture and Radix's own toggle, leaving
+          the panel closed. The popover is controlled purely by isPopoverOpen,
+          and the button decides what to do (open panel, start/stop capture or
+          streaming) explicitly. */}
+      <PopoverAnchor asChild>
         <Button
           size="icon"
           title={getButtonTitle()}
@@ -275,7 +280,7 @@ export const SystemAudio = (props: useSystemAudioType) => {
         >
           {getButtonIcon()}
         </Button>
-      </PopoverTrigger>
+      </PopoverAnchor>
 
       {(capturing ||
         dg.isStreaming ||
