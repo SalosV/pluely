@@ -13,6 +13,7 @@ export const STORAGE_KEYS = {
   SYSTEM_AUDIO_CONTEXT: "system_audio_context",
   SYSTEM_AUDIO_QUICK_ACTIONS: "system_audio_quick_actions",
   SYSTEM_AUDIO_AUTO_RESPOND: "system_audio_auto_respond",
+  SYSTEM_AUDIO_HANDS_FREE: "system_audio_hands_free",
   VAD_CONFIG: "vad_config",
   CUSTOMIZABLE: "customizable",
   SHORTCUTS: "shortcuts",

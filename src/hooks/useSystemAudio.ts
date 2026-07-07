@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useWindowResize, useGlobalShortcuts } from ".";
 import { setStreamingResponse } from "./useStreamingResponse";
+import { liveBridge } from "./useLiveAIBridge";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useApp } from "@/contexts";
@@ -138,6 +139,16 @@ export function useSystemAudio() {
       String(value)
     );
   }, []);
+
+  // Single source of truth for the AI system prompt: the user's custom system
+  // prompt when enabled, otherwise the context content, falling back to the
+  // default. Used by every code path that calls processWithAI (batch quick
+  // actions, batch speech, the hotkey, and Live).
+  const buildEffectiveSystemPrompt = useCallback((): string => {
+    return useSystemPrompt
+      ? systemPrompt || DEFAULT_SYSTEM_PROMPT
+      : contextContent || DEFAULT_SYSTEM_PROMPT;
+  }, [useSystemPrompt, systemPrompt, contextContent]);
 
   // Keep pendingTranscriptRef mirroring the state for the hotkey callback.
   useEffect(() => {
@@ -303,9 +314,7 @@ export function useSystemAudio() {
   const handleQuickActionClick = async (action: string) => {
     setError("");
 
-    const effectiveSystemPrompt = useSystemPrompt
-      ? systemPrompt || DEFAULT_SYSTEM_PROMPT
-      : contextContent || DEFAULT_SYSTEM_PROMPT;
+    const effectiveSystemPrompt = buildEffectiveSystemPrompt();
 
     // Include the most recent transcription in conversation history if it exists
     let updatedMessages = [...conversation.messages];
@@ -553,9 +562,7 @@ export function useSystemAudio() {
             return;
           }
 
-          const effectiveSystemPrompt = useSystemPrompt
-            ? systemPrompt || DEFAULT_SYSTEM_PROMPT
-            : contextContent || DEFAULT_SYSTEM_PROMPT;
+          const effectiveSystemPrompt = buildEffectiveSystemPrompt();
 
           const previousMessages = conversation.messages.map((msg) => {
             return { role: msg.role, content: msg.content };
@@ -747,14 +754,21 @@ export function useSystemAudio() {
 
   useEffect(() => {
     globalShortcuts.registerSystemAudioCallback(async () => {
+      // Live mode (#34 + AI): the hotkey fires the AI over the accumulated
+      // INTERLOCUTOR transcript. This MUST come first — during a Live session
+      // batch `capturing` is false (the two pipelines are mutually exclusive),
+      // so without this guard the code below would fall through to startCapture.
+      if (liveBridge.isStreaming) {
+        await liveBridge.fireFromHotkey();
+        return;
+      }
+
       // In "transcribe-only" mode (#25) with an accumulated transcript, the
       // hotkey fires the AI on that transcript instead of toggling capture, so
       // the user can keep listening and ask for a response on demand.
       const pending = pendingTranscriptRef.current.trim();
       if (capturing && !autoRespondRef.current && pending) {
-        const effectiveSystemPrompt = useSystemPrompt
-          ? systemPrompt || DEFAULT_SYSTEM_PROMPT
-          : contextContent || DEFAULT_SYSTEM_PROMPT;
+        const effectiveSystemPrompt = buildEffectiveSystemPrompt();
         const previousMessages = conversation.messages.map((msg) => ({
           role: msg.role,
           content: msg.content,
@@ -972,6 +986,7 @@ export function useSystemAudio() {
     setConversation,
     // AI processing
     processWithAI,
+    buildEffectiveSystemPrompt,
     // Context management
     useSystemPrompt,
     setUseSystemPrompt: updateUseSystemPrompt,

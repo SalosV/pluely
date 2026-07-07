@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import {
   Button,
   Popover,
@@ -27,9 +27,12 @@ import {
   useSystemAudioType,
   useDeepgramStreaming,
   setWindowForceExpanded,
+  setLiveBridge,
 } from "@/hooks";
 import { useApp } from "@/contexts";
 import { cn } from "@/lib/utils";
+import type { Message } from "@/types/completion";
+import { STORAGE_KEYS } from "@/config/constants";
 
 export const SystemAudio = (props: useSystemAudioType) => {
   const {
@@ -67,6 +70,8 @@ export const SystemAudio = (props: useSystemAudioType) => {
     startContinuousRecording,
     ignoreContinuousRecording,
     scrollAreaRef,
+    processWithAI,
+    buildEffectiveSystemPrompt,
   } = props;
 
   const { supportsImages, selectedSttProvider, selectedAudioDevices } =
@@ -97,6 +102,117 @@ export const SystemAudio = (props: useSystemAudioType) => {
     }
     setLiveConfigError("");
   };
+
+  // --- AI responses in Live mode (point 1) ---------------------------------
+  // Only the INTERLOCUTOR (channel 1) is treated as "a question to answer"; the
+  // user's own voice (channel 0) is included only as context. The AI fires
+  // either on the global hotkey (default) or automatically per interlocutor
+  // turn when "Hands-free" is on.
+
+  // "Hands-free": auto-respond on each interlocutor turn (default OFF → hotkey).
+  const [handsFree, setHandsFreeState] = useState(
+    () => localStorage.getItem(STORAGE_KEYS.SYSTEM_AUDIO_HANDS_FREE) === "true"
+  );
+  const setHandsFree = (value: boolean) => {
+    setHandsFreeState(value);
+    localStorage.setItem(STORAGE_KEYS.SYSTEM_AUDIO_HANDS_FREE, String(value));
+  };
+
+  // Id of the newest final already sent to the AI, so the same interlocutor
+  // turn is never answered twice (advanced synchronously at fire time).
+  const consumedFinalIdRef = useRef<number>(-1);
+  // Mirror of isAIProcessing for the fire guard. Set to true synchronously in
+  // fireLiveAI (so a second turn arriving before React commits the state can't
+  // slip past the guard) and kept in sync by the effect below (true→false when
+  // the response actually finishes).
+  const isAIProcessingRef = useRef<boolean>(isAIProcessing);
+  useEffect(() => {
+    isAIProcessingRef.current = isAIProcessing;
+  }, [isAIProcessing]);
+  // Read finals from a ref so fireLiveAI/buildLiveHistory are identity-stable:
+  // the hotkey (via the bridge) then always sees the freshest finals, and the
+  // bridge/effects don't churn on every transcript.
+  const finalsRef = useRef(dg.finals);
+  useEffect(() => {
+    finalsRef.current = dg.finals;
+  }, [dg.finals]);
+
+  // Build the AI history from the transcript already CONSUMED (id <= upto), so
+  // the fresh interlocutor turn being asked about isn't duplicated (it goes only
+  // as the userMessage). Both speakers map to `user` (providers reliably support
+  // only user/assistant); the "Interlocutor:"/"Me:" prefix carries the "who", so
+  // the user's own words are context, not something the model thinks it said.
+  const buildLiveHistory = useCallback((upto: number): Message[] => {
+    const now = Date.now();
+    return finalsRef.current
+      .filter((f) => f.id <= upto)
+      .map((f, i) => {
+        const who = f.channel === 1 ? "Interlocutor" : "Me";
+        return {
+          id: `live-${f.id}`,
+          role: "user" as const,
+          content: `${who}: ${f.text}`,
+          timestamp: now + i,
+        };
+      });
+  }, []);
+
+  // Fire the AI over the interlocutor text accumulated since the last response.
+  // Shared by the hotkey and the hands-free auto-fire. No-op if nothing pending
+  // or a response is already streaming (turns that arrive mid-answer are ignored
+  // until it finishes).
+  const fireLiveAI = useCallback(async () => {
+    if (isAIProcessingRef.current) return;
+    const finals = finalsRef.current;
+    const prevMarker = consumedFinalIdRef.current;
+    const fresh = finals.filter(
+      (f) => f.channel === 1 && f.id > prevMarker
+    );
+    const question = fresh
+      .map((f) => f.text)
+      .join(" ")
+      .trim();
+    if (!question) return;
+    // Advance the marker to the newest final of ANY channel, and mark a fire as
+    // in-flight — both synchronously, before any await, so a turn landing in the
+    // gap can't double-fire (and can't abort this answer).
+    const maxId = finals.reduce((m, f) => Math.max(m, f.id), -1);
+    consumedFinalIdRef.current = maxId;
+    isAIProcessingRef.current = true;
+    // History = everything already consumed (context); the fresh interlocutor
+    // turn is the userMessage only, so it isn't sent twice.
+    const history = buildLiveHistory(prevMarker);
+    await processWithAI(question, buildEffectiveSystemPrompt(), history);
+  }, [buildLiveHistory, processWithAI, buildEffectiveSystemPrompt]);
+
+  // Reset the consumed marker whenever a session (re)starts. -1 is below every
+  // possible final id, so it's a safe floor even though Deepgram's id counter is
+  // monotonic across sessions.
+  useEffect(() => {
+    if (dg.isStreaming) {
+      consumedFinalIdRef.current = -1;
+    }
+  }, [dg.isStreaming]);
+
+  // Publish Live state + fire handler into the bridge the hotkey reads. Now that
+  // fireLiveAI is stable, this runs only when the session starts/stops.
+  useEffect(() => {
+    setLiveBridge({ isStreaming: dg.isStreaming, fireFromHotkey: fireLiveAI });
+    return () => setLiveBridge({ isStreaming: false });
+  }, [dg.isStreaming, fireLiveAI]);
+
+  // Hands-free auto-fire: when ON, respond as soon as a fresh interlocutor turn
+  // finalizes (and no response is in flight). Keyed on finals so it re-checks on
+  // each new transcript; the guard + marker inside fireLiveAI stop double-fires.
+  useEffect(() => {
+    if (!handsFree || !dg.isStreaming || isAIProcessing) return;
+    const hasFreshInterlocutor = dg.finals.some(
+      (f) => f.channel === 1 && f.id > consumedFinalIdRef.current
+    );
+    if (hasFreshInterlocutor) {
+      void fireLiveAI();
+    }
+  }, [dg.finals, handsFree, dg.isStreaming, isAIProcessing, fireLiveAI]);
 
   const isVadMode = vadConfig.enabled;
   const hasResponse = hasAIResponse || isAIProcessing;
@@ -520,17 +636,34 @@ export const SystemAudio = (props: useSystemAudioType) => {
                     }}
                   />
                 ) : liveMode ? (
-                  <LiveTranscription
-                    isStreaming={dg.isStreaming}
-                    connected={dg.connected}
-                    error={dg.error || liveConfigError}
-                    finals={dg.finals}
-                    interims={dg.interims}
-                    micMuted={dg.micMuted}
-                    onToggleMic={() => dg.toggleMicMuted()}
-                    onStart={startLive}
-                    onStop={() => dg.stopStreaming()}
-                  />
+                  <>
+                    <LiveTranscription
+                      isStreaming={dg.isStreaming}
+                      connected={dg.connected}
+                      error={dg.error || liveConfigError}
+                      finals={dg.finals}
+                      interims={dg.interims}
+                      micMuted={dg.micMuted}
+                      onToggleMic={() => dg.toggleMicMuted()}
+                      handsFree={handsFree}
+                      onToggleHandsFree={setHandsFree}
+                      onStart={startLive}
+                      onStop={() => dg.stopStreaming()}
+                    />
+
+                    {/* AI response shown BELOW the live transcript (reads the
+                        streaming text from the store). Only rendered once
+                        there's a response or one is in flight. */}
+                    {(hasAIResponse || isAIProcessing) && (
+                      <ResultsSection
+                        lastTranscription={lastTranscription}
+                        isAIProcessing={isAIProcessing}
+                        conversation={conversation}
+                        conversationMode={conversationMode}
+                        setConversationMode={setConversationMode}
+                      />
+                    )}
+                  </>
                 ) : (
                   <>
                     {/* Recording Panel */}

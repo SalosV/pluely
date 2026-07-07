@@ -6,7 +6,7 @@ import {
   MicIcon,
   MicOffIcon,
 } from "lucide-react";
-import { Button } from "@/components";
+import { Button, Switch } from "@/components";
 import type { TranscriptEntry, InterimEntry } from "@/hooks";
 
 type Props = {
@@ -17,6 +17,8 @@ type Props = {
   interims: InterimEntry[];
   micMuted: boolean;
   onToggleMic: () => void;
+  handsFree: boolean;
+  onToggleHandsFree: (value: boolean) => void;
   onStart: () => void;
   onStop: () => void;
 };
@@ -49,6 +51,8 @@ export const LiveTranscription = ({
   interims,
   micMuted,
   onToggleMic,
+  handsFree,
+  onToggleHandsFree,
   onStart,
   onStop,
 }: Props) => {
@@ -108,6 +112,21 @@ export const LiveTranscription = ({
             </Button>
           )}
         </div>
+      </div>
+
+      {/* Hands-free: when off (default) the AI answers the interlocutor only
+          when you press the hotkey; when on it answers automatically at the end
+          of each of their turns. Your own voice never triggers it either way. */}
+      <div className="flex items-center justify-between gap-2 rounded-md bg-muted/30 px-2 py-1">
+        <div className="flex flex-col">
+          <span className="text-[10px] font-medium">Hands-free</span>
+          <span className="text-[9px] text-muted-foreground leading-tight">
+            {handsFree
+              ? "AI answers each interlocutor turn automatically"
+              : "Press the hotkey to ask the AI about the interlocutor"}
+          </span>
+        </div>
+        <Switch checked={handsFree} onCheckedChange={onToggleHandsFree} />
       </div>
 
       {/* Connecting spinner: only while a stream is starting up. */}

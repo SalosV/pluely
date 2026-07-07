@@ -89,6 +89,10 @@ export function useDeepgramStreaming() {
       setConnected(false);
       // New session starts unmuted (backend also resets its flag).
       setMicMuted(false);
+      // Restart final ids from 0 each session so consumers using an id floor
+      // (e.g. the Live AI "already answered up to id N" marker) stay simple and
+      // don't rely on a forever-monotonic counter.
+      entryIdRef.current = 0;
 
       // Register listeners BEFORE starting so we don't miss early events.
       cleanupListeners();
