@@ -180,13 +180,22 @@ pub async fn start_deepgram_streaming(
         }
     }
 
+    // Start unmuted every session so a stale mute from a previous run can't
+    // silence the mic unexpectedly.
+    state
+        .mic_muted
+        .store(false, Ordering::Release);
+
     // Build the unified stereo stream (mic + system). This is the single owner
     // of BOTH the cpal mic stream and the CoreAudio tap; dropping it (when the
-    // spawned task ends/aborts) tears down both.
-    let stream = crate::speaker::DualStream::new(device_id, input_device_id).map_err(|e| {
-        error!("Failed to create unified audio stream: {}", e);
-        format!("Failed to access microphone + system audio: {}", e)
-    })?;
+    // spawned task ends/aborts) tears down both. The mic-mute flag is shared so
+    // set_mic_muted can silence the "You" channel live.
+    let stream =
+        crate::speaker::DualStream::new(device_id, input_device_id, state.mic_muted.clone())
+            .map_err(|e| {
+                error!("Failed to create unified audio stream: {}", e);
+                format!("Failed to access microphone + system audio: {}", e)
+            })?;
     let sr = stream.sample_rate();
     if !(8000..=96000).contains(&sr) {
         return Err(format!(
@@ -707,6 +716,18 @@ pub async fn manual_stop_continuous(app: AppHandle) -> Result<(), String> {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
 
+    Ok(())
+}
+
+/// Mute/unmute the user's own microphone during a unified Live session (#34).
+/// Takes effect live: the combiner discards mic samples and feeds silence on the
+/// "You" channel while muted, so the interlocutor channel keeps transcribing.
+/// This is the manual equivalent of muting yourself in Meet/Zoom, which Pluely
+/// can't observe.
+#[tauri::command]
+pub fn set_mic_muted(app: AppHandle, muted: bool) -> Result<(), String> {
+    let state = app.state::<crate::AudioState>();
+    state.mic_muted.store(muted, Ordering::Release);
     Ok(())
 }
 

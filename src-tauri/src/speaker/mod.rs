@@ -172,17 +172,18 @@ impl DualStream {
     pub fn new(
         system_device_id: Option<String>,
         mic_device_id: Option<String>,
+        mic_muted: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<Self> {
         #[cfg(target_os = "macos")]
         {
             let system = SpeakerInput::new_with_device(system_device_id)?.stream();
             let mic = mic::MicInput::new(mic_device_id)?.stream()?;
-            let inner = combiner::StereoCombiner::new(mic, system);
+            let inner = combiner::StereoCombiner::new(mic, system, mic_muted);
             Ok(Self { inner })
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = (system_device_id, mic_device_id);
+            let _ = (system_device_id, mic_device_id, mic_muted);
             Err(anyhow::anyhow!(
                 "Unified mic + system capture is only supported on macOS"
             ))

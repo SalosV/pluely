@@ -1,4 +1,11 @@
-import { RadioIcon, Loader2, PlayIcon, SquareIcon } from "lucide-react";
+import {
+  RadioIcon,
+  Loader2,
+  PlayIcon,
+  SquareIcon,
+  MicIcon,
+  MicOffIcon,
+} from "lucide-react";
 import { Button } from "@/components";
 import type { TranscriptEntry, InterimEntry } from "@/hooks";
 
@@ -8,6 +15,8 @@ type Props = {
   error: string;
   finals: TranscriptEntry[];
   interims: InterimEntry[];
+  micMuted: boolean;
+  onToggleMic: () => void;
   onStart: () => void;
   onStop: () => void;
 };
@@ -38,6 +47,8 @@ export const LiveTranscription = ({
   error,
   finals,
   interims,
+  micMuted,
+  onToggleMic,
   onStart,
   onStop,
 }: Props) => {
@@ -54,25 +65,49 @@ export const LiveTranscription = ({
           />
           <h4 className="text-xs font-medium">Live transcript</h4>
         </div>
-        {/* Explicit Start/Stop so the action is obvious from inside the panel. */}
-        {isStreaming ? (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={onStop}
-            className="h-6 text-[10px] gap-1 px-2"
-          >
-            <SquareIcon className="w-3 h-3" /> Stop
-          </Button>
-        ) : (
-          <Button
-            size="sm"
-            onClick={onStart}
-            className="h-6 text-[10px] gap-1 px-2"
-          >
-            <PlayIcon className="w-3 h-3" /> Start
-          </Button>
-        )}
+        <div className="flex items-center gap-1.5">
+          {/* Mute my own mic ("You" channel). Independent of Meet/Zoom mute —
+              Pluely captures the mic separately, so this is the manual control. */}
+          {isStreaming && (
+            <Button
+              size="sm"
+              variant={micMuted ? "default" : "outline"}
+              onClick={onToggleMic}
+              title={
+                micMuted
+                  ? "Your mic is muted — click to unmute"
+                  : "Mute my mic (You)"
+              }
+              className="h-6 text-[10px] gap-1 px-2"
+            >
+              {micMuted ? (
+                <MicOffIcon className="w-3 h-3" />
+              ) : (
+                <MicIcon className="w-3 h-3" />
+              )}
+              {micMuted ? "Muted" : "Mute me"}
+            </Button>
+          )}
+          {/* Explicit Start/Stop so the action is obvious from inside the panel. */}
+          {isStreaming ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onStop}
+              className="h-6 text-[10px] gap-1 px-2"
+            >
+              <SquareIcon className="w-3 h-3" /> Stop
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              onClick={onStart}
+              className="h-6 text-[10px] gap-1 px-2"
+            >
+              <PlayIcon className="w-3 h-3" /> Start
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Connecting spinner: only while a stream is starting up. */}

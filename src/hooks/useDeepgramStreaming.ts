@@ -52,6 +52,8 @@ export function useDeepgramStreaming() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string>("");
+  // Whether the user has muted their own mic ("You" channel) for this session.
+  const [micMuted, setMicMuted] = useState(false);
   // Finalized turns, in order.
   const [finals, setFinals] = useState<TranscriptEntry[]>([]);
   // The current, not-yet-final transcript(s), keyed by channel. In the unified
@@ -85,6 +87,8 @@ export function useDeepgramStreaming() {
       setFinals([]);
       setInterims({});
       setConnected(false);
+      // New session starts unmuted (backend also resets its flag).
+      setMicMuted(false);
 
       // Register listeners BEFORE starting so we don't miss early events.
       cleanupListeners();
@@ -164,7 +168,21 @@ export function useDeepgramStreaming() {
     setIsStreaming(false);
     setConnected(false);
     setInterims({});
+    setMicMuted(false);
   }, [cleanupListeners]);
+
+  // Toggle muting the user's own mic ("You" channel) live. Optimistically flips
+  // local state, then tells the backend; on failure, revert so UI stays truthful.
+  const toggleMicMuted = useCallback(async () => {
+    const next = !micMuted;
+    setMicMuted(next);
+    try {
+      await invoke("set_mic_muted", { muted: next });
+    } catch (err) {
+      console.error("Failed to set mic muted:", err);
+      setMicMuted(!next); // revert on failure
+    }
+  }, [micMuted]);
 
   // Clean up on unmount.
   useEffect(() => {
@@ -186,6 +204,8 @@ export function useDeepgramStreaming() {
     error,
     finals,
     interims: interimEntries,
+    micMuted,
+    toggleMicMuted,
     startStreaming,
     stopStreaming,
   };

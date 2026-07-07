@@ -526,6 +526,8 @@ export const SystemAudio = (props: useSystemAudioType) => {
                     error={dg.error || liveConfigError}
                     finals={dg.finals}
                     interims={dg.interims}
+                    micMuted={dg.micMuted}
+                    onToggleMic={() => dg.toggleMicMuted()}
                     onStart={startLive}
                     onStop={() => dg.stopStreaming()}
                   />

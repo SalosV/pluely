@@ -26,6 +26,8 @@ use super::SpeakerStream;
 use futures_util::Stream;
 use std::collections::VecDeque;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 /// Cap on the interleaved backlog before we treat a persistently faster source
@@ -143,10 +145,15 @@ pub struct StereoCombiner {
     // jitter never mis-pairs the channels.
     mic_starved_polls: u32,
     sys_starved_polls: u32,
+
+    // User-controlled "mute my mic" flag (#34). When set, mic samples are
+    // discarded and the "You" channel is fed silence immediately (no waiting on
+    // the jitter tolerance), so the interlocutor channel keeps flowing normally.
+    mic_muted: Arc<AtomicBool>,
 }
 
 impl StereoCombiner {
-    pub fn new(mic: MicStream, system: SpeakerStream) -> Self {
+    pub fn new(mic: MicStream, system: SpeakerStream, mic_muted: Arc<AtomicBool>) -> Self {
         let target_rate = system.sample_rate();
         let mic_rate = mic.sample_rate();
         let resampler = if mic_rate != target_rate {
@@ -170,6 +177,7 @@ impl StereoCombiner {
             started: false,
             mic_starved_polls: 0,
             sys_starved_polls: 0,
+            mic_muted,
         }
     }
 
@@ -195,6 +203,13 @@ impl StereoCombiner {
                     }
                     Poll::Pending => break,
                 }
+            }
+            // Muted: keep draining the mic (so its ring buffer doesn't back up)
+            // but discard the samples — nothing enters the carry, so the "You"
+            // channel goes silent. poll_next forces immediate silence separately.
+            if self.mic_muted.load(Ordering::Acquire) {
+                self.mic_scratch.clear();
+                return self.mic_done;
             }
             if self.mic_scratch.is_empty() {
                 return self.mic_done;
@@ -294,12 +309,13 @@ impl Stream for StereoCombiner {
 
         // Startup gate: don't emit (or zero-fill) until BOTH sources are live,
         // so the two channels start phase-aligned. Once a source has *ended*
-        // (done) we stop waiting on it — otherwise a mic that never opens would
-        // deadlock the interlocutor channel.
+        // (done) — or the mic is muted (it will never produce) — we stop waiting
+        // on it, otherwise the interlocutor channel would deadlock.
         if !this.started {
+            let mic_unavailable = this.mic_done || this.mic_muted.load(Ordering::Acquire);
             let both_live = mic_have > 0 && sys_have > 0;
             let one_ended_other_live =
-                (this.mic_done && sys_have > 0) || (this.sys_done && mic_have > 0);
+                (mic_unavailable && sys_have > 0) || (this.sys_done && mic_have > 0);
             if both_live || one_ended_other_live {
                 this.started = true;
             } else {
@@ -324,8 +340,13 @@ impl Stream for StereoCombiner {
 
         // A side is treated as "silent" (safe to zero-fill against) only if it
         // has ENDED, or it has been empty for longer than the jitter tolerance.
+        // A MUTED mic counts as silent immediately (no waiting): its samples were
+        // already discarded in drain_source, so mic_have is 0 and we want the
+        // "You" channel to go silent right away while the interlocutor flows.
+        let mic_muted = this.mic_muted.load(Ordering::Acquire);
         let sys_silent = this.sys_done || this.sys_starved_polls >= SILENCE_TOLERANCE_POLLS;
-        let mic_silent = this.mic_done || this.mic_starved_polls >= SILENCE_TOLERANCE_POLLS;
+        let mic_silent =
+            mic_muted || this.mic_done || this.mic_starved_polls >= SILENCE_TOLERANCE_POLLS;
 
         let (n, mic_zero, sys_zero) = if mic_have > 0 && sys_have > 0 {
             // Both live: interleave the overlap, keep the leftover for next poll.

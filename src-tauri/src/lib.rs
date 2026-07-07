@@ -26,6 +26,11 @@ pub struct AudioState {
     /// they tear down promptly on stop, independent of the parent task (which
     /// stop_system_audio_capture aborts). Notified by stop_system_audio_capture.
     deepgram_stop_notify: Arc<tokio::sync::Notify>,
+    /// User-controlled mute of their own microphone during a unified Live
+    /// session (#34). When true, the combiner drops mic samples and feeds
+    /// silence on the "You" channel, so muting yourself in Meet/Zoom (which
+    /// Pluely can't observe) has a manual equivalent here. Defaults to false.
+    mic_muted: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[tauri::command]
@@ -79,6 +84,7 @@ pub fn run() {
             speaker::start_deepgram_streaming,
             speaker::stop_system_audio_capture,
             speaker::manual_stop_continuous,
+            speaker::set_mic_muted,
             speaker::check_system_audio_access,
             speaker::request_system_audio_access,
             speaker::get_vad_config,
