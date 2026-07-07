@@ -118,9 +118,31 @@ export const SystemAudio = (props: useSystemAudioType) => {
     localStorage.setItem(STORAGE_KEYS.SYSTEM_AUDIO_HANDS_FREE, String(value));
   };
 
+  // How long (ms) the interlocutor must stay silent after finishing a turn
+  // before hands-free fires the AI. This is what lets them pause mid-thought
+  // without the AI jumping in: each new final restarts the timer, so we only
+  // fire once they've genuinely stopped. Configurable; clamped to a sane range.
+  const [turnDebounceMs, setTurnDebounceMsState] = useState<number>(() => {
+    const raw = Number(
+      localStorage.getItem(STORAGE_KEYS.SYSTEM_AUDIO_TURN_DEBOUNCE_MS)
+    );
+    return Number.isFinite(raw) && raw > 0 ? raw : 1200;
+  });
+  const setTurnDebounceMs = (value: number) => {
+    const clamped = Math.min(5000, Math.max(300, Math.round(value)));
+    setTurnDebounceMsState(clamped);
+    localStorage.setItem(
+      STORAGE_KEYS.SYSTEM_AUDIO_TURN_DEBOUNCE_MS,
+      String(clamped)
+    );
+  };
+
   // Id of the newest final already sent to the AI, so the same interlocutor
   // turn is never answered twice (advanced synchronously at fire time).
   const consumedFinalIdRef = useRef<number>(-1);
+  // Pending hands-free auto-fire timer (the turn-debounce). Restarted on every
+  // fresh interlocutor final so we only fire after real silence.
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Mirror of isAIProcessing for the fire guard. Set to true synchronously in
   // fireLiveAI (so a second turn arriving before React commits the state can't
   // slip past the guard) and kept in sync by the effect below (true→false when
@@ -129,9 +151,12 @@ export const SystemAudio = (props: useSystemAudioType) => {
   useEffect(() => {
     isAIProcessingRef.current = isAIProcessing;
   }, [isAIProcessing]);
-  // Read finals from a ref so fireLiveAI/buildLiveHistory are identity-stable:
-  // the hotkey (via the bridge) then always sees the freshest finals, and the
-  // bridge/effects don't churn on every transcript.
+  // Read finals from a ref so fireLiveAI/buildLiveHistory don't need `dg.finals`
+  // in their deps: the hotkey (via the bridge) always sees the freshest finals,
+  // and they don't churn on every transcript. (fireLiveAI still changes identity
+  // when processWithAI does — i.e. after each answer, since processWithAI closes
+  // over conversation.messages — but that's harmless: the effects it feeds are
+  // idempotent.)
   const finalsRef = useRef(dg.finals);
   useEffect(() => {
     finalsRef.current = dg.finals;
@@ -173,11 +198,14 @@ export const SystemAudio = (props: useSystemAudioType) => {
       .join(" ")
       .trim();
     if (!question) return;
-    // Advance the marker to the newest final of ANY channel, and mark a fire as
-    // in-flight — both synchronously, before any await, so a turn landing in the
-    // gap can't double-fire (and can't abort this answer).
-    const maxId = finals.reduce((m, f) => Math.max(m, f.id), -1);
-    consumedFinalIdRef.current = maxId;
+    // Advance the marker only as far as the newest INTERLOCUTOR final we actually
+    // included in `question` — NOT the global max. Advancing past a final whose
+    // text we didn't send would silently drop that turn if it raced in at fire
+    // time; capping at the consumed interlocutor id means any later-arriving turn
+    // stays "fresh" and gets answered on the next debounce window. Set the
+    // in-flight guard synchronously too, so a turn landing in the gap can't
+    // double-fire or abort this answer.
+    consumedFinalIdRef.current = fresh[fresh.length - 1].id;
     isAIProcessingRef.current = true;
     // History = everything already consumed (context); the fresh interlocutor
     // turn is the userMessage only, so it isn't sent twice.
@@ -194,25 +222,50 @@ export const SystemAudio = (props: useSystemAudioType) => {
     }
   }, [dg.isStreaming]);
 
-  // Publish Live state + fire handler into the bridge the hotkey reads. Now that
-  // fireLiveAI is stable, this runs only when the session starts/stops.
+  // Publish Live state + fire handler into the bridge the hotkey reads. Re-runs
+  // when the session starts/stops or fireLiveAI's identity changes (after each
+  // answer); setLiveBridge is idempotent so the extra runs are harmless.
   useEffect(() => {
     setLiveBridge({ isStreaming: dg.isStreaming, fireFromHotkey: fireLiveAI });
     return () => setLiveBridge({ isStreaming: false });
   }, [dg.isStreaming, fireLiveAI]);
 
-  // Hands-free auto-fire: when ON, respond as soon as a fresh interlocutor turn
-  // finalizes (and no response is in flight). Keyed on finals so it re-checks on
-  // each new transcript; the guard + marker inside fireLiveAI stop double-fires.
+  // Hands-free auto-fire, DEBOUNCED: when a fresh interlocutor final arrives we
+  // (re)start a timer; each new final restarts it, so the AI only fires once the
+  // interlocutor has actually stopped for `turnDebounceMs`. This is what lets
+  // them pause mid-sentence without the AI cutting in. Keyed on finals so it
+  // re-evaluates on every transcript.
   useEffect(() => {
-    if (!handsFree || !dg.isStreaming || isAIProcessing) return;
+    if (!handsFree || !dg.isStreaming) return;
+    // A response is streaming → don't schedule; the post-response effect run
+    // (isAIProcessing flips false) will pick up anything new.
+    if (isAIProcessing) return;
     const hasFreshInterlocutor = dg.finals.some(
       (f) => f.channel === 1 && f.id > consumedFinalIdRef.current
     );
-    if (hasFreshInterlocutor) {
+    if (!hasFreshInterlocutor) return;
+
+    // Restart the debounce: a newer final invalidates the previous countdown.
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    debounceTimerRef.current = setTimeout(() => {
+      debounceTimerRef.current = null;
       void fireLiveAI();
-    }
-  }, [dg.finals, handsFree, dg.isStreaming, isAIProcessing, fireLiveAI]);
+    }, turnDebounceMs);
+
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+    };
+  }, [
+    dg.finals,
+    handsFree,
+    dg.isStreaming,
+    isAIProcessing,
+    turnDebounceMs,
+    fireLiveAI,
+  ]);
 
   const isVadMode = vadConfig.enabled;
   const hasResponse = hasAIResponse || isAIProcessing;
@@ -655,6 +708,8 @@ export const SystemAudio = (props: useSystemAudioType) => {
                       onToggleMic={() => dg.toggleMicMuted()}
                       handsFree={handsFree}
                       onToggleHandsFree={setHandsFree}
+                      turnDebounceMs={turnDebounceMs}
+                      onChangeDebounce={setTurnDebounceMs}
                       collapsed={hasAIResponse || isAIProcessing}
                       onStart={startLive}
                       onStop={() => dg.stopStreaming()}

@@ -22,6 +22,9 @@ type Props = {
   onToggleMic: () => void;
   handsFree: boolean;
   onToggleHandsFree: (value: boolean) => void;
+  // Debounce (ms) before hands-free fires the AI after the interlocutor stops.
+  turnDebounceMs: number;
+  onChangeDebounce: (value: number) => void;
   // When an AI response is showing, the transcript collapses to just the latest
   // interlocutor turn so the response gets the space (expandable on demand).
   collapsed: boolean;
@@ -59,6 +62,8 @@ export const LiveTranscription = ({
   onToggleMic,
   handsFree,
   onToggleHandsFree,
+  turnDebounceMs,
+  onChangeDebounce,
   collapsed,
   onStart,
   onStop,
@@ -134,16 +139,41 @@ export const LiveTranscription = ({
       {/* Hands-free: when off (default) the AI answers the interlocutor only
           when you press the hotkey; when on it answers automatically at the end
           of each of their turns. Your own voice never triggers it either way. */}
-      <div className="flex items-center justify-between gap-2 rounded-md bg-muted/30 px-2 py-1">
-        <div className="flex flex-col">
-          <span className="text-[10px] font-medium">Hands-free</span>
-          <span className="text-[9px] text-muted-foreground leading-tight">
-            {handsFree
-              ? "AI answers each interlocutor turn automatically"
-              : "Press the hotkey to ask the AI about the interlocutor"}
-          </span>
+      <div className="rounded-md bg-muted/30 px-2 py-1 space-y-1.5">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex flex-col">
+            <span className="text-[10px] font-medium">Hands-free</span>
+            <span className="text-[9px] text-muted-foreground leading-tight">
+              {handsFree
+                ? "AI answers each interlocutor turn automatically"
+                : "Press the hotkey to ask the AI about the interlocutor"}
+            </span>
+          </div>
+          <Switch checked={handsFree} onCheckedChange={onToggleHandsFree} />
         </div>
-        <Switch checked={handsFree} onCheckedChange={onToggleHandsFree} />
+
+        {/* Turn debounce: only relevant (and shown) in hands-free. Lets the
+            interlocutor pause mid-thought without the AI jumping in. */}
+        {handsFree && (
+          <div className="flex items-center gap-2 pt-0.5">
+            <span className="text-[9px] text-muted-foreground whitespace-nowrap">
+              Wait after they stop
+            </span>
+            <input
+              type="range"
+              min={300}
+              max={3000}
+              step={100}
+              value={turnDebounceMs}
+              onChange={(e) => onChangeDebounce(Number(e.target.value))}
+              className="flex-1 h-1 accent-blue-500 cursor-pointer"
+              title="How long to wait for silence before the AI responds"
+            />
+            <span className="text-[9px] font-medium tabular-nums w-8 text-right">
+              {(turnDebounceMs / 1000).toFixed(1)}s
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Connecting spinner: only while a stream is starting up. */}

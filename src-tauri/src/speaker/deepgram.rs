@@ -54,10 +54,14 @@ fn default_true() -> bool {
     true
 }
 fn default_endpointing() -> u32 {
-    300
+    // Slightly longer than the 300ms default so a brief pause mid-sentence is
+    // less likely to finalize a turn prematurely. The real "wait for the speaker
+    // to finish" behavior for AI triggering is the debounce on the frontend;
+    // this just keeps the transcript from fragmenting on every micro-pause.
+    400
 }
 fn default_utterance_end() -> u32 {
-    1000
+    1200
 }
 
 /// One transcript update forwarded to the UI.
