@@ -107,6 +107,12 @@ export const SystemAudio = (props: useSystemAudioType) => {
 
   const handleModeChange = (next: CaptureMode) => {
     if (next === captureMode) return;
+    // Switching modes ends whatever session is currently running so two
+    // pipelines can't overlap: a live stream is stopped by setLiveMode(false),
+    // and an in-progress batch capture is stopped here.
+    if (capturing) {
+      void stopCapture();
+    }
     if (next === "live") {
       setLiveMode(true);
     } else {
@@ -275,12 +281,15 @@ export const SystemAudio = (props: useSystemAudioType) => {
                     Auto-detect (#25). Mode can't be switched mid-session. */}
                 {!setupRequired && (
                   <div className="flex items-center gap-2 min-w-0">
+                    {/* Mode can be switched while the overlay is open/capturing
+                        — handleModeChange stops any live stream and flips the VAD
+                        flag as needed. Only lock it during an in-flight continuous
+                        recording or while processing, so a mode change can't
+                        corrupt a segment mid-capture. */}
                     <ModeSwitcher
                       mode={captureMode}
                       onModeChange={handleModeChange}
                       disabled={
-                        capturing ||
-                        dg.isStreaming ||
                         isRecordingInContinuousMode ||
                         isProcessing ||
                         isAIProcessing
