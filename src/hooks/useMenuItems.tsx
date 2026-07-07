@@ -1,10 +1,9 @@
 import {
   Settings,
-  Code,
+  KeyRoundIcon,
   MessagesSquare,
   WandSparkles,
   AudioLinesIcon,
-  MicIcon,
   SquareSlashIcon,
   MonitorIcon,
   PowerIcon,
@@ -29,14 +28,17 @@ export const useMenuItems = () => {
       href: "/chats",
     },
     {
+      // Formerly "Dev space" — this is the required AI/STT provider + API key
+      // configuration, not a developer sandbox. Renamed and promoted so it's
+      // discoverable as the first thing to set up.
+      icon: KeyRoundIcon,
+      label: "AI Providers",
+      href: "/dev-space",
+    },
+    {
       icon: WandSparkles,
       label: "System prompts",
       href: "/system-prompts",
-    },
-    {
-      icon: Settings,
-      label: "App Settings",
-      href: "/settings",
     },
     {
       icon: MessageSquareTextIcon,
@@ -50,24 +52,18 @@ export const useMenuItems = () => {
     },
     {
       icon: AudioLinesIcon,
-      label: "Audio",
+      label: "Audio & Voice",
       href: "/audio",
-    },
-    {
-      icon: MicIcon,
-      label: "Voice",
-      href: "/voice",
     },
     {
       icon: SquareSlashIcon,
       label: "Cursor & Shortcuts",
       href: "/shortcuts",
     },
-
     {
-      icon: Code,
-      label: "Dev space",
-      href: "/dev-space",
+      icon: Settings,
+      label: "App Settings",
+      href: "/settings",
     },
   ];
 

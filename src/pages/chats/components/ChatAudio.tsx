@@ -7,7 +7,7 @@ interface ChatAudioProps {
   setMicOpen: (open: boolean) => void;
   isRecording: boolean;
   setIsRecording: (recording: boolean) => void;
-  disabled: boolean;
+  disabled?: boolean;
 }
 
 export const ChatAudio = ({
@@ -15,7 +15,7 @@ export const ChatAudio = ({
   setMicOpen,
   isRecording,
   setIsRecording,
-  disabled,
+  disabled = false,
 }: ChatAudioProps) => {
   const { selectedSttProvider } = useApp();
   const isProviderConfigured = !!selectedSttProvider.provider;

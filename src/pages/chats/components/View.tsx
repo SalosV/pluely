@@ -28,7 +28,7 @@ import {
 
 const View = () => {
   const { conversationId } = useParams();
-  const { hasActiveLicense, supportsImages } = useApp();
+  const { supportsImages } = useApp();
   const navigate = useNavigate();
   const [messages, setMessages] = useState<ChatConversation | null>(null);
 
@@ -248,14 +248,13 @@ const View = () => {
                     isLoading={completion.isLoading}
                     isFilesPopoverOpen={completion.isFilesPopoverOpen}
                     setIsFilesPopoverOpen={completion.setIsFilesPopoverOpen}
-                    disabled={!hasActiveLicense || !supportsImages}
+                    disabled={!supportsImages}
                   />
                   <ChatAudio
                     micOpen={completion.micOpen}
                     setMicOpen={completion.setMicOpen}
                     isRecording={completion.isRecording}
                     setIsRecording={completion.setIsRecording}
-                    disabled={!hasActiveLicense}
                   />
                   <ChatScreenshot
                     screenshotConfiguration={completion.screenshotConfiguration}
@@ -263,7 +262,7 @@ const View = () => {
                     isLoading={completion.isLoading}
                     captureScreenshot={completion.captureScreenshot}
                     isScreenshotLoading={completion.isScreenshotLoading}
-                    disabled={!hasActiveLicense || !supportsImages}
+                    disabled={!supportsImages}
                   />
                 </div>
 
@@ -276,7 +275,7 @@ const View = () => {
                   onChange={(e) => completion.setInput(e.target.value)}
                   onKeyDown={completion.handleKeyPress}
                   onPaste={completion.handlePaste}
-                  disabled={completion.isLoading || !hasActiveLicense}
+                  disabled={completion.isLoading}
                 />
                 <Button
                   size="icon"
@@ -284,9 +283,7 @@ const View = () => {
                   title="Send message"
                   onClick={() => completion.submit()}
                   disabled={
-                    completion.isLoading ||
-                    !completion.input.trim() ||
-                    !hasActiveLicense
+                    completion.isLoading || !completion.input.trim()
                   }
                 >
                   {completion.isLoading ? (

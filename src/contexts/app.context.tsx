@@ -132,8 +132,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [customizable, setCustomizable] = useState<CustomizableState>(
     DEFAULT_CUSTOMIZABLE_STATE
   );
-  // Pluely licensing/API removed — all client-side features are always available.
-  const hasActiveLicense = true;
   const [supportsImages, setSupportsImagesState] = useState<boolean>(() => {
     const stored = safeLocalStorage.getItem(STORAGE_KEYS.SUPPORTS_IMAGES);
     return stored === null ? true : stored === "true";
@@ -148,8 +146,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     const syncShortcutsState = async () => {
       try {
-        await invoke("set_license_status", { hasLicense: true });
-
         const config = getShortcutsConfig();
         await invoke("update_shortcuts", { config });
       } catch (error) {
@@ -570,7 +566,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     toggleContentProtection,
     toggleAutostart,
     loadData,
-    hasActiveLicense,
     selectedAudioDevices,
     setSelectedAudioDevices,
     setCursorType,

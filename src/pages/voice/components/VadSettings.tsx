@@ -176,18 +176,24 @@ export const VadSettings = () => {
         {vadConfig.enabled && (
           <>
             <div className="space-y-2">
-              <Label className="text-sm font-medium flex items-center justify-between">
-                <span>Speech Sensitivity (Raw)</span>
-                <span className="text-muted-foreground font-normal">
-                  {(vadConfig.sensitivity_rms * 1000).toFixed(1)}
-                </span>
+              <Label className="text-sm font-medium">
+                <span>Speech Sensitivity</span>
               </Label>
+              {/*
+                The underlying `sensitivity_rms` is a threshold: HIGHER value =
+                harder to trigger = LESS sensitive. The old slider exposed that
+                raw value, so moving it right made the VAD less sensitive — the
+                opposite of what "sensitivity" implies. Here the slider shows
+                sensitivity directly (right = more sensitive) by inverting the
+                mapping across the 1..20 (×1000) range, and the raw number is
+                hidden in favor of labeled ends.
+              */}
               <Slider
-                value={[vadConfig.sensitivity_rms * 1000]}
+                value={[21 - vadConfig.sensitivity_rms * 1000]}
                 onValueChange={([value]) =>
                   updateVadConfig({
                     ...vadConfig,
-                    sensitivity_rms: value / 1000,
+                    sensitivity_rms: (21 - value) / 1000,
                   })
                 }
                 min={1}
@@ -195,6 +201,10 @@ export const VadSettings = () => {
                 step={0.5}
                 className="w-full"
               />
+              <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                <span>Less sensitive</span>
+                <span>More sensitive</span>
+              </div>
             </div>
 
             <div className="space-y-2">

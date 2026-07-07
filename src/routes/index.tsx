@@ -16,7 +16,6 @@ const Shortcuts = lazy(() => import("@/pages/shortcuts"));
 const Audio = lazy(() => import("@/pages/audio"));
 const Screenshot = lazy(() => import("@/pages/screenshot"));
 const Responses = lazy(() => import("@/pages/responses"));
-const Voice = lazy(() => import("@/pages/voice"));
 
 export default function AppRoutes() {
   return (
@@ -77,14 +76,6 @@ export default function AppRoutes() {
             element={
               <Suspense fallback={null}>
                 <Audio />
-              </Suspense>
-            }
-          />
-          <Route
-            path="/voice"
-            element={
-              <Suspense fallback={null}>
-                <Voice />
               </Suspense>
             }
           />

@@ -1,4 +1,5 @@
 import { AudioSelection } from "./components";
+import { VadSettings, SystemAudioContext } from "@/pages/voice/components";
 import { PageLayout } from "@/layouts";
 import { getPlatform } from "@/lib";
 
@@ -34,12 +35,13 @@ const Audio = () => {
 
   return (
     <PageLayout
-      title="Audio Settings"
-      description="Configure your audio input and output devices for voice interaction and system audio capture."
+      title="Audio & Voice"
+      description="Choose your audio devices and tune how the interviewer's speech is captured and transcribed — all in one place."
     >
+      {/* Device selection (input/output) */}
       <AudioSelection />
 
-      <div className="text-xs text-amber-600 bg-amber-500/10 p-3 rounded-md mb-4 space-y-2">
+      <div className="text-xs text-amber-600 bg-amber-500/10 p-3 rounded-md space-y-2">
         <p>
           <strong>⚠️ If selected devices don't work:</strong> Please verify your
           default system audio settings. Go to{" "}
@@ -54,6 +56,12 @@ const Audio = () => {
           devices.
         </p>
       </div>
+
+      {/* System-audio capture tuning (VAD) + AI context, previously the
+          separate "Voice" page — consolidated here so the whole
+          "capture the interviewer" task lives on one page. */}
+      <VadSettings />
+      <SystemAudioContext />
     </PageLayout>
   );
 };

@@ -41,7 +41,6 @@ export type IContextType = {
   toggleContentProtection: (isEnabled: boolean) => Promise<void>;
   toggleAutostart: (isEnabled: boolean) => Promise<void>;
   loadData: () => void;
-  hasActiveLicense: boolean;
   selectedAudioDevices: {
     input: { id: string; name: string };
     output: { id: string; name: string };

@@ -7,7 +7,10 @@ const DevSpace = () => {
   const settings = useSettings();
 
   return (
-    <PageLayout title="Dev Space" description="Manage your dev space">
+    <PageLayout
+      title="AI Providers"
+      description="Configure your AI and speech-to-text providers and API keys"
+    >
       <Contribute />
       {/* Provider Selection */}
       <AIProviders {...settings} />
