@@ -443,13 +443,13 @@ export function useSystemAudio() {
         if (!capturing) return;
 
         const base64Audio = event.payload as string;
-        // Convert to blob
-        const binaryString = atob(base64Audio);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
-        }
-        const audioBlob = new Blob([bytes], { type: "audio/wav" });
+        // Decode the base64 WAV natively via a data: URL instead of an
+        // O(n) charCodeAt loop on the main thread. For a 30s segment (up to
+        // ~3.84 MB) that loop froze the UI for 150-300ms; the browser decodes
+        // the data URL off the JS thread.
+        const audioBlob = await fetch(`data:audio/wav;base64,${base64Audio}`).then(
+          (r) => r.blob()
+        );
 
         if (!selectedSttProvider.provider) {
           setError("No speech provider selected.");

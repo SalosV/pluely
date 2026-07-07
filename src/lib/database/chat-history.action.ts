@@ -261,78 +261,59 @@ export async function updateConversation(
 
   const db = await getDatabase();
 
+  // Verify the conversation exists before opening a transaction.
+  const updateResult = await db.execute(
+    "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
+    [conversation.title, conversation.updatedAt, conversation.id]
+  );
+
+  if (updateResult.rowsAffected === 0) {
+    throw new Error("Conversation not found");
+  }
+
+  // Rewrite the message set inside a real SQLite transaction. Previously the
+  // DELETE + per-row INSERTs ran unbatched with a fragile manual "restore the
+  // backup" rollback; a single BEGIN/COMMIT is atomic (all-or-nothing) and lets
+  // SQLite batch the writes. INSERT OR REPLACE keeps it robust if an id repeats.
   try {
-    // Update conversation
-    const updateResult = await db.execute(
-      "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
-      [conversation.title, conversation.updatedAt, conversation.id]
-    );
+    await db.execute("BEGIN");
 
-    if (updateResult.rowsAffected === 0) {
-      throw new Error("Conversation not found");
-    }
-
-    // Get existing messages for backup
-    const existingMessages = await db.select<DbMessage[]>(
-      "SELECT * FROM messages WHERE conversation_id = ?",
-      [conversation.id]
-    );
-
-    // Delete existing messages
     await db.execute("DELETE FROM messages WHERE conversation_id = ?", [
       conversation.id,
     ]);
 
-    // Insert updated messages
-    try {
-      for (const message of conversation.messages) {
-        if (!validateMessage(message)) {
-          console.warn("Skipping invalid message in conversation update");
-          continue;
-        }
-
-        const attachedFilesJson = message.attachedFiles
-          ? JSON.stringify(message.attachedFiles)
-          : null;
-
-        await db.execute(
-          "INSERT INTO messages (id, conversation_id, role, content, timestamp, attached_files) VALUES (?, ?, ?, ?, ?, ?)",
-          [
-            message.id,
-            conversation.id,
-            message.role,
-            message.content,
-            message.timestamp,
-            attachedFilesJson,
-          ]
-        );
+    for (const message of conversation.messages) {
+      if (!validateMessage(message)) {
+        console.warn("Skipping invalid message in conversation update");
+        continue;
       }
-    } catch (messageError) {
-      // Rollback: restore original messages
-      console.error(
-        "Failed to insert new messages, restoring backup:",
-        messageError
+
+      const attachedFilesJson = message.attachedFiles
+        ? JSON.stringify(message.attachedFiles)
+        : null;
+
+      await db.execute(
+        "INSERT OR REPLACE INTO messages (id, conversation_id, role, content, timestamp, attached_files) VALUES (?, ?, ?, ?, ?, ?)",
+        [
+          message.id,
+          conversation.id,
+          message.role,
+          message.content,
+          message.timestamp,
+          attachedFilesJson,
+        ]
       );
-      for (const msg of existingMessages) {
-        await db
-          .execute(
-            "INSERT INTO messages (id, conversation_id, role, content, timestamp, attached_files) VALUES (?, ?, ?, ?, ?, ?)",
-            [
-              msg.id,
-              msg.conversation_id,
-              msg.role,
-              msg.content,
-              msg.timestamp,
-              msg.attached_files,
-            ]
-          )
-          .catch(() => {});
-      }
-      throw messageError;
     }
 
+    await db.execute("COMMIT");
     return conversation;
   } catch (error) {
+    // Roll the whole message rewrite back to the pre-transaction state.
+    try {
+      await db.execute("ROLLBACK");
+    } catch (rollbackError) {
+      console.error("Failed to roll back conversation update:", rollbackError);
+    }
     console.error("Failed to update conversation:", error);
     throw error;
   }

@@ -103,11 +103,15 @@ export async function fetchSTT(params: STTParams): Promise<STTResult> {
     let finalHeaders = { ...headers };
     let body: FormData | string | Blob;
 
+    // Read the audio bytes exactly once; the branches below reuse this buffer
+    // instead of calling audio.arrayBuffer() again.
+    const audioBuffer = await audio.arrayBuffer();
+
     const isForm =
       provider.curl.includes("-F ") || provider.curl.includes("--form");
     if (isForm) {
       const form = new FormData();
-      const freshBlob = new Blob([await audio.arrayBuffer()], {
+      const freshBlob = new Blob([audioBuffer], {
         type: audio.type,
       });
       form.append("file", freshBlob, "audio.wav");
@@ -156,7 +160,7 @@ export async function fetchSTT(params: STTParams): Promise<STTResult> {
       body = form;
     } else if (isBinaryUpload) {
       // Deepgram-style: raw binary body
-      body = new Blob([await audio.arrayBuffer()], {
+      body = new Blob([audioBuffer], {
         type: audio.type,
       });
       // Override the curl's hardcoded Content-Type with the audio's real MIME
