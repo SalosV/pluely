@@ -150,6 +150,90 @@ pub async fn start_system_audio_capture(
     Ok(())
 }
 
+/// Start a Deepgram Live streaming session (#31/#32). Opens the system-audio
+/// stream and pipes its PCM to Deepgram over WebSocket, forwarding interim +
+/// final transcripts (with speaker labels) to the UI. Mutually exclusive with
+/// the batch capture: reuses the same stream_task slot.
+#[tauri::command]
+pub async fn start_deepgram_streaming(
+    app: AppHandle,
+    config: crate::speaker::deepgram::DeepgramConfig,
+    device_id: Option<String>,
+) -> Result<(), String> {
+    let state = app.state::<crate::AudioState>();
+
+    {
+        let guard = state
+            .stream_task
+            .lock()
+            .map_err(|e| format!("Failed to acquire lock: {}", e))?;
+        if guard.is_some() {
+            warn!("Capture already running");
+            return Err("Capture already running".to_string());
+        }
+    }
+
+    let input = SpeakerInput::new_with_device(device_id).map_err(|e| {
+        error!("Failed to create speaker input: {}", e);
+        format!("Failed to access system audio: {}", e)
+    })?;
+    let stream = input.stream();
+    let sr = stream.sample_rate();
+    if !(8000..=96000).contains(&sr) {
+        return Err(format!(
+            "Invalid sample rate: {}. Expected 8000-96000 Hz",
+            sr
+        ));
+    }
+
+    // Reset the shared stop flag/notify for this session (captures are mutually
+    // exclusive, so reusing the AudioState-owned handles is safe).
+    let stop_flag = state.deepgram_stop.clone();
+    stop_flag.store(false, Ordering::Release);
+    let stop_notify = state.deepgram_stop_notify.clone();
+
+    *state
+        .is_capturing
+        .lock()
+        .map_err(|e| format!("Failed to set capturing state: {}", e))? = true;
+    let _ = app.emit("capture-started", sr);
+
+    let app_clone = app.clone();
+    let stop_for_task = stop_flag.clone();
+    let notify_for_task = stop_notify.clone();
+    let task = tokio::spawn(async move {
+        crate::speaker::deepgram::run_deepgram_streaming(
+            app_clone.clone(),
+            stream,
+            sr,
+            config,
+            stop_for_task,
+            notify_for_task,
+        )
+        .await;
+
+        // Clear capturing state + task slot when the session ends.
+        let state = app_clone.state::<crate::AudioState>();
+        {
+            if let Ok(mut c) = state.is_capturing.lock() {
+                *c = false;
+            };
+        }
+        {
+            if let Ok(mut guard) = state.stream_task.lock() {
+                *guard = None;
+            };
+        }
+    });
+
+    *state
+        .stream_task
+        .lock()
+        .map_err(|e| format!("Failed to store task: {}", e))? = Some(task);
+
+    Ok(())
+}
+
 // VAD-enabled capture - OPTIMIZED for real-time speech detection
 async fn run_vad_capture(
     app: AppHandle,
@@ -566,6 +650,16 @@ fn samples_to_wav_b64(sample_rate: u32, mono_f32: &[f32]) -> Result<String, Stri
 #[tauri::command]
 pub async fn stop_system_audio_capture(app: AppHandle) -> Result<(), String> {
     let state = app.state::<crate::AudioState>();
+
+    // Signal the Deepgram streaming task (if any) to wind down gracefully
+    // (send CloseStream, flush finals) before we abort. The notify wakes its
+    // child tasks out of any blocking await (wedged WS/channel) directly, so
+    // they can't outlive us even though we abort the parent below. Harmless if
+    // the batch pipeline is the one running.
+    state
+        .deepgram_stop
+        .store(true, std::sync::atomic::Ordering::Release);
+    state.deepgram_stop_notify.notify_waiters();
 
     // Abort task in separate scope (Send trait fix)
     {

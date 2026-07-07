@@ -19,6 +19,13 @@ pub struct AudioState {
     stream_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     vad_config: Arc<Mutex<VadConfig>>,
     is_capturing: Arc<Mutex<bool>>,
+    /// Stop flag for the Deepgram Live streaming task (#31). Shared with the
+    /// running task so stop_system_audio_capture can end it cleanly.
+    deepgram_stop: Arc<std::sync::atomic::AtomicBool>,
+    /// Wakes the Deepgram streaming child tasks out of any blocking await so
+    /// they tear down promptly on stop, independent of the parent task (which
+    /// stop_system_audio_capture aborts). Notified by stop_system_audio_capture.
+    deepgram_stop_notify: Arc<tokio::sync::Notify>,
 }
 
 #[tauri::command]
@@ -69,6 +76,7 @@ pub fn run() {
             shortcuts::set_content_protected,
             shortcuts::exit_app,
             speaker::start_system_audio_capture,
+            speaker::start_deepgram_streaming,
             speaker::stop_system_audio_capture,
             speaker::manual_stop_continuous,
             speaker::check_system_audio_access,

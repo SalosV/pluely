@@ -22,7 +22,8 @@ import { RecordingPanel } from "./RecordingPanel";
 import { ResultsSection } from "./ResultsSection";
 import { PermissionFlow } from "./PermissionFlow";
 import { QuickActions } from "./QuickActions";
-import { useSystemAudioType } from "@/hooks";
+import { LiveTranscription } from "./LiveTranscription";
+import { useSystemAudioType, useDeepgramStreaming } from "@/hooks";
 import { useApp } from "@/contexts";
 import { cn } from "@/lib/utils";
 
@@ -64,7 +65,10 @@ export const SystemAudio = (props: useSystemAudioType) => {
     scrollAreaRef,
   } = props;
 
-  const { supportsImages } = useApp();
+  const { supportsImages, selectedSttProvider, selectedAudioDevices } =
+    useApp();
+
+  const dg = useDeepgramStreaming();
 
   // View mode toggle
   const [conversationMode, setConversationMode] = useState(false);
@@ -72,6 +76,17 @@ export const SystemAudio = (props: useSystemAudioType) => {
   // Screenshot state
   const [screenshotImage, setScreenshotImage] = useState<string | null>(null);
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
+
+  // Live (Deepgram streaming) mode toggle (#31/#32), persisted across sessions
+  const [liveMode, setLiveModeState] = useState(
+    () => localStorage.getItem("system_audio_live_mode") === "true"
+  );
+  const [liveConfigError, setLiveConfigError] = useState("");
+
+  const setLiveMode = (value: boolean) => {
+    setLiveModeState(value);
+    localStorage.setItem("system_audio_live_mode", String(value));
+  };
 
   const isVadMode = vadConfig.enabled;
   const hasResponse = hasAIResponse || isAIProcessing;
@@ -100,6 +115,32 @@ export const SystemAudio = (props: useSystemAudioType) => {
   }, [isProcessing, screenshotImage]);
 
   const handleToggleCapture = async () => {
+    if (liveMode) {
+      if (dg.isStreaming) {
+        await dg.stopStreaming();
+      } else {
+        setLiveConfigError("");
+        const apiKey = selectedSttProvider.variables["api_key"];
+        const model = selectedSttProvider.variables["model"] || "nova-3";
+        if (!apiKey) {
+          setLiveConfigError(
+            "Set a Deepgram API key in Settings to use Live mode."
+          );
+          return;
+        }
+        const deviceId =
+          selectedAudioDevices.output.id &&
+          selectedAudioDevices.output.id !== "default"
+            ? selectedAudioDevices.output.id
+            : undefined;
+        await dg.startStreaming(
+          { apiKey, model, language: "multi", diarize: true },
+          deviceId
+        );
+      }
+      return;
+    }
+
     if (capturing) {
       await stopCapture();
     } else {
@@ -158,6 +199,8 @@ export const SystemAudio = (props: useSystemAudioType) => {
     if (setupRequired) return <AlertCircleIcon className="text-orange-500" />;
     if (error && !setupRequired)
       return <AlertCircleIcon className="text-red-500" />;
+    if (dg.isStreaming)
+      return <AudioLinesIcon className="text-red-500 animate-pulse" />;
     if (isProcessing) return <LoaderIcon className="animate-spin" />;
     if (capturing)
       return <AudioLinesIcon className="text-green-500 animate-pulse" />;
@@ -167,6 +210,7 @@ export const SystemAudio = (props: useSystemAudioType) => {
   const getButtonTitle = () => {
     if (setupRequired) return "Setup required - Click for instructions";
     if (error && !setupRequired) return `Error: ${error}`;
+    if (dg.isStreaming) return "Live transcription — click to stop";
     if (isProcessing) return "Transcribing audio...";
     if (capturing) return "Stop system audio capture";
     return "Start system audio capture";
@@ -176,7 +220,9 @@ export const SystemAudio = (props: useSystemAudioType) => {
     <Popover
       open={isPopoverOpen}
       onOpenChange={(open) => {
-        if (capturing && !open) {
+        // Don't let an outside-click / Escape dismiss the popover while a
+        // capture OR a live-streaming session is active.
+        if ((capturing || dg.isStreaming) && !open) {
           return;
         }
         setIsPopoverOpen(open);
@@ -196,7 +242,7 @@ export const SystemAudio = (props: useSystemAudioType) => {
         </Button>
       </PopoverTrigger>
 
-      {(capturing || setupRequired || error) && (
+      {(capturing || dg.isStreaming || setupRequired || error) && (
         <PopoverContent
           align="end"
           side="bottom"
@@ -210,30 +256,53 @@ export const SystemAudio = (props: useSystemAudioType) => {
                 {/* Mode Switcher + Auto-respond toggle (Auto-detect only, #25) */}
                 {!setupRequired && (
                   <div className="flex items-center gap-2 min-w-0">
-                    <ModeSwitcher
-                      isVadMode={isVadMode}
-                      onModeChange={handleModeChange}
-                      disabled={
-                        isRecordingInContinuousMode ||
-                        isProcessing ||
-                        isAIProcessing
-                      }
-                    />
-                    {isVadMode && (
-                      <label
-                        className="flex items-center gap-1.5 cursor-pointer select-none"
-                        title="When off, speech is only transcribed into a timeline; press the system-audio hotkey to ask the AI"
-                      >
-                        <Switch
-                          checked={autoRespond}
-                          onCheckedChange={setAutoRespond}
-                          className="scale-75"
+                    {!liveMode && (
+                      <>
+                        <ModeSwitcher
+                          isVadMode={isVadMode}
+                          onModeChange={handleModeChange}
+                          disabled={
+                            isRecordingInContinuousMode ||
+                            isProcessing ||
+                            isAIProcessing
+                          }
                         />
-                        <span className="text-[10px] text-muted-foreground whitespace-nowrap">
-                          Auto-respond
-                        </span>
-                      </label>
+                        {isVadMode && (
+                          <label
+                            className="flex items-center gap-1.5 cursor-pointer select-none"
+                            title="When off, speech is only transcribed into a timeline; press the system-audio hotkey to ask the AI"
+                          >
+                            <Switch
+                              checked={autoRespond}
+                              onCheckedChange={setAutoRespond}
+                              className="scale-75"
+                            />
+                            <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                              Auto-respond
+                            </span>
+                          </label>
+                        )}
+                      </>
                     )}
+                    <label
+                      className={cn(
+                        "flex items-center gap-1.5 select-none",
+                        capturing || dg.isStreaming
+                          ? "opacity-50 cursor-not-allowed"
+                          : "cursor-pointer"
+                      )}
+                      title="Stream to Deepgram for live transcription with speaker labels (instead of recording segments)"
+                    >
+                      <Switch
+                        checked={liveMode}
+                        onCheckedChange={setLiveMode}
+                        disabled={capturing || dg.isStreaming}
+                        className="scale-75"
+                      />
+                      <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                        Live
+                      </span>
+                    </label>
                   </div>
                 )}
                 {setupRequired && (
@@ -278,8 +347,8 @@ export const SystemAudio = (props: useSystemAudioType) => {
                     </Button>
                   )}
 
-                  {/* Close Button */}
-                  {!capturing && (
+                  {/* Close Button — hidden during capture or live streaming */}
+                  {!capturing && !dg.isStreaming && (
                     <Button
                       size="icon"
                       variant="ghost"
@@ -358,6 +427,13 @@ export const SystemAudio = (props: useSystemAudioType) => {
                     onPermissionDenied={() => {
                       // Keep showing setup instructions
                     }}
+                  />
+                ) : liveMode ? (
+                  <LiveTranscription
+                    connected={dg.connected}
+                    error={dg.error || liveConfigError}
+                    finals={dg.finals}
+                    interim={dg.interim}
                   />
                 ) : (
                   <>

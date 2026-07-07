@@ -9,6 +9,7 @@ export * from "./useGlobalShortcuts";
 export * from "./useShortcuts";
 export * from "./useSystemAudio";
 export * from "./useStreamingResponse";
+export * from "./useDeepgramStreaming";
 export * from "./useVadConfigStore";
 export * from "./useSystemAudioContextStore";
 export * from "./useHistory";
