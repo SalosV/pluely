@@ -18,9 +18,24 @@ export interface STTParams {
 }
 
 /**
- * Transcribes audio and returns either the transcription or an error/warning message as a single string.
+ * Discriminated result of a speech-to-text request.
+ *
+ * `ok: true` carries a real transcription (never empty). `ok: false` carries a
+ * human-readable error. This lets callers reliably tell an actual transcription
+ * apart from a failure — previously the function returned sentinel strings like
+ * "No transcription found", which callers then forwarded to the AI as if the
+ * interviewer had literally said that.
  */
-export async function fetchSTT(params: STTParams): Promise<string> {
+export type STTResult =
+  | { ok: true; text: string; warnings?: string[] }
+  | { ok: false; error: string };
+
+/**
+ * Transcribes audio. Never throws for expected failures (network, HTTP, empty
+ * transcription): those come back as `{ ok: false, error }`. Callers must check
+ * `.ok` before using `.text`.
+ */
+export async function fetchSTT(params: STTParams): Promise<STTResult> {
   let warnings: string[] = [];
 
   try {
@@ -196,7 +211,14 @@ export async function fetchSTT(params: STTParams): Promise<string> {
     try {
       data = JSON.parse(responseText);
     } catch {
-      return [...warnings, responseText.trim()].filter(Boolean).join("; ");
+      // Non-JSON response body. Some providers return plain text transcripts;
+      // if there's content, treat it as the transcription, otherwise it's an
+      // empty/invalid response we surface as an error.
+      const plain = responseText.trim();
+      if (!plain) {
+        return { ok: false, error: "No transcription found (empty response)" };
+      }
+      return { ok: true, text: plain, warnings: warnings.length ? warnings : undefined };
     }
 
     // Extract transcription
@@ -205,13 +227,17 @@ export async function fetchSTT(params: STTParams): Promise<string> {
     const transcription = (getByPath(data, path) || "").trim();
 
     if (!transcription) {
-      return [...warnings, "No transcription found"].join("; ");
+      return { ok: false, error: "No transcription found" };
     }
 
     // Return transcription with any warnings
-    return [...warnings, transcription].filter(Boolean).join("; ");
+    return {
+      ok: true,
+      text: transcription,
+      warnings: warnings.length ? warnings : undefined,
+    };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(msg);
+    return { ok: false, error: msg };
   }
 }

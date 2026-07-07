@@ -67,12 +67,18 @@ const AutoSpeechVADInternal = ({
         setIsTranscribing(true);
 
         // Use the fetchSTT function for all providers
-        transcription = await fetchSTT({
+        const result = await fetchSTT({
           provider: providerConfig,
           selectedProvider: selectedSttProvider,
           audio: audioBlob,
         });
 
+        if (!result.ok) {
+          setState((prev: any) => ({ ...prev, error: result.error }));
+          return;
+        }
+
+        transcription = result.text;
         if (transcription) {
           submit(transcription);
         }
