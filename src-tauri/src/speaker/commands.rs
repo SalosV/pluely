@@ -171,6 +171,22 @@ async fn run_vad_capture(
     // instead of allocating a new Vec per chunk (this loop runs ~94×/s).
     let mut mono: Vec<f32> = Vec::with_capacity(config.hop_size);
 
+    // --- Adaptive noise floor (#22) ---
+    // Track the ambient RMS during non-speech and derive the speech threshold
+    // relative to it, instead of only using the fixed config.sensitivity_rms.
+    // The floor is seeded from the config value and updated with a slow EMA over
+    // silence chunks, so a noisy room raises the bar and a quiet room lowers it.
+    let mut noise_floor = config.sensitivity_rms;
+    const NOISE_EMA_ALPHA: f32 = 0.02; // slow adaptation
+    const NOISE_THRESHOLD_MULT: f32 = 2.5; // speech must exceed 2.5× the floor
+
+    // --- Level metering throttle (#21) ---
+    // Emit the real RMS to the UI roughly every ~100ms. hop_size samples per
+    // chunk at `sr` Hz → chunk_ms; emit every N chunks.
+    let chunk_ms = (config.hop_size as f32 / sr as f32) * 1000.0;
+    let level_emit_every = ((100.0 / chunk_ms).round() as usize).max(1);
+    let mut chunk_counter: usize = 0;
+
     while let Some(sample) = stream.next().await {
         buffer.push_back(sample);
 
@@ -187,7 +203,21 @@ async fn run_vad_capture(
             apply_noise_gate_in_place(&mut mono, config.noise_gate_threshold);
 
             let (rms, peak) = calculate_audio_metrics(&mono);
-            let is_speech = rms > config.sensitivity_rms || peak > config.peak_threshold;
+
+            // Effective threshold is the stricter of the configured sensitivity
+            // and the adaptive noise floor, so ambient noise can only raise it.
+            let adaptive_rms_threshold =
+                config.sensitivity_rms.max(noise_floor * NOISE_THRESHOLD_MULT);
+            let is_speech = rms > adaptive_rms_threshold || peak > config.peak_threshold;
+
+            // Emit the real level (normalized 0..1) on a ~100ms cadence so the
+            // overlay visualizer can reflect actual audio instead of a fake one.
+            chunk_counter = chunk_counter.wrapping_add(1);
+            if chunk_counter % level_emit_every == 0 {
+                // Scale RMS to a perceptually reasonable 0..1 for the meter.
+                let level = (rms * 8.0).min(1.0);
+                let _ = app.emit("audio-level", level);
+            }
 
             if is_speech {
                 if !in_speech {
@@ -265,8 +295,13 @@ async fn run_vad_capture(
                         speech_chunks = 0;
                     }
                 } else {
-                    // Not in speech yet - maintain rolling pre-speech buffer.
-                    // Copy from the scratch slice (it's reused next iteration).
+                    // Not in speech yet - this chunk is ambient noise, so fold
+                    // its RMS into the adaptive noise floor via a slow EMA (#22).
+                    noise_floor =
+                        noise_floor * (1.0 - NOISE_EMA_ALPHA) + rms * NOISE_EMA_ALPHA;
+
+                    // Maintain rolling pre-speech buffer. Copy from the scratch
+                    // slice (it's reused next iteration).
                     pre_speech.extend(mono.iter().copied());
 
                     // Trim excess (maintain fixed size). The rolling buffer is

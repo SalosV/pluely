@@ -5,6 +5,7 @@ import {
   PopoverTrigger,
   PopoverContent,
   ScrollArea,
+  Switch,
 } from "@/components";
 import {
   HeadphonesIcon,
@@ -33,6 +34,10 @@ export const SystemAudio = (props: useSystemAudioType) => {
     lastTranscription,
     hasAIResponse,
     error,
+    discardedNotice,
+    autoRespond,
+    setAutoRespond,
+    pendingTranscript,
     setupRequired,
     startCapture,
     stopCapture,
@@ -201,17 +206,34 @@ export const SystemAudio = (props: useSystemAudioType) => {
             {/* Header - Mode Switcher + Actions */}
             <div className="flex-shrink-0 p-3 border-b border-border/50">
               <div className="flex items-center justify-between gap-2">
-                {/* Mode Switcher */}
+                {/* Mode Switcher + Auto-respond toggle (Auto-detect only, #25) */}
                 {!setupRequired && (
-                  <ModeSwitcher
-                    isVadMode={isVadMode}
-                    onModeChange={handleModeChange}
-                    disabled={
-                      isRecordingInContinuousMode ||
-                      isProcessing ||
-                      isAIProcessing
-                    }
-                  />
+                  <div className="flex items-center gap-2 min-w-0">
+                    <ModeSwitcher
+                      isVadMode={isVadMode}
+                      onModeChange={handleModeChange}
+                      disabled={
+                        isRecordingInContinuousMode ||
+                        isProcessing ||
+                        isAIProcessing
+                      }
+                    />
+                    {isVadMode && (
+                      <label
+                        className="flex items-center gap-1.5 cursor-pointer select-none"
+                        title="When off, speech is only transcribed into a timeline; press the system-audio hotkey to ask the AI"
+                      >
+                        <Switch
+                          checked={autoRespond}
+                          onCheckedChange={setAutoRespond}
+                          className="scale-75"
+                        />
+                        <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                          Auto-respond
+                        </span>
+                      </label>
+                    )}
+                  </div>
                 )}
                 {setupRequired && (
                   <h2 className="font-semibold text-sm">Setup Required</h2>
@@ -316,6 +338,16 @@ export const SystemAudio = (props: useSystemAudioType) => {
                   </div>
                 )}
 
+                {/* Discarded-segment notice (#24) — subtle, auto-clearing */}
+                {discardedNotice && !error && !setupRequired && (
+                  <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-muted/40 border border-border/50 animate-in fade-in">
+                    <AlertCircleIcon className="w-3 h-3 text-muted-foreground flex-shrink-0" />
+                    <p className="text-[10px] text-muted-foreground">
+                      {discardedNotice}
+                    </p>
+                  </div>
+                )}
+
                 {/* Setup Required - Permission Flow */}
                 {setupRequired ? (
                   <PermissionFlow
@@ -340,6 +372,27 @@ export const SystemAudio = (props: useSystemAudioType) => {
                       onStopAndSend={manualStopAndSend}
                       onIgnore={ignoreContinuousRecording}
                     />
+
+                    {/* Pending transcript timeline (#25): only in Auto-detect
+                        with Auto-respond off, while nothing is being answered */}
+                    {isVadMode &&
+                      !autoRespond &&
+                      pendingTranscript &&
+                      !isAIProcessing && (
+                        <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[10px] font-medium text-primary uppercase tracking-wide">
+                              Transcript
+                            </span>
+                            <span className="text-[9px] text-muted-foreground">
+                              Press the system-audio hotkey to ask the AI
+                            </span>
+                          </div>
+                          <p className="text-[11px] whitespace-pre-wrap text-foreground/80">
+                            {pendingTranscript}
+                          </p>
+                        </div>
+                      )}
 
                     {/* AI Response — reads streaming text from the store itself */}
                     <ResultsSection

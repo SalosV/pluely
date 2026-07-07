@@ -1,9 +1,15 @@
 import { useEffect, useRef } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-// Configuration constants for the audio analyzer
+// Configuration constants for the level meter
 const AUDIO_CONFIG = {
-  FFT_SIZE: 512,
-  SMOOTHING: 0.8,
+  // Number of history samples drawn across the canvas at once. Each Rust
+  // "audio-level" event (~every 100ms) pushes one new sample in on the right
+  // and the oldest sample scrolls off the left.
+  HISTORY_LENGTH: 48,
+  // Lerp factor applied to incoming levels so the meter doesn't jitter
+  // between consecutive ~100ms samples.
+  SMOOTHING: 0.35,
   MIN_BAR_HEIGHT: 2,
   MIN_BAR_WIDTH: 2,
   BAR_SPACING: 4,
@@ -19,51 +25,26 @@ interface AudioVisualizerProps {
   stream?: MediaStream | null;
 }
 
-export function AudioVisualizer({ stream, isRecording }: AudioVisualizerProps) {
-  // Refs for managing audio context and animation
+// `stream` is kept in the props for API compatibility with callers that pass
+// a browser MediaStream (e.g. mic recording elsewhere in the app), but system
+// audio capture happens in the Rust backend, so there is nothing to read from
+// it here.
+export function AudioVisualizer({
+  stream: _stream,
+  isRecording,
+}: AudioVisualizerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const animationFrameRef = useRef<number>(0);
   const containerRef = useRef<HTMLDivElement>(null);
-  const oscillatorsRef = useRef<OscillatorNode[]>([]);
-  const gainNodesRef = useRef<GainNode[]>([]);
+  const animationFrameRef = useRef<number>(0);
 
-  // Cleanup function to stop visualization and close audio context
-  const cleanup = () => {
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-    }
-    // Stop all oscillators
-    oscillatorsRef.current.forEach((osc) => {
-      try {
-        osc.stop();
-      } catch {
-        // Oscillator may already be stopped
-      }
-    });
-    oscillatorsRef.current = [];
-    gainNodesRef.current = [];
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
-      audioContextRef.current = null;
-    }
-  };
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return cleanup;
-  }, []);
-
-  // Start or stop visualization based on recording state
-  useEffect(() => {
-    if (isRecording) {
-      startVisualization();
-    } else {
-      cleanup();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stream, isRecording]);
+  // Rolling history of smoothed levels (0..1), oldest first. Drawn as bars
+  // left-to-right so the meter scrolls as new samples arrive.
+  const historyRef = useRef<number[]>(
+    new Array(AUDIO_CONFIG.HISTORY_LENGTH).fill(0)
+  );
+  // Current smoothed level, updated by lerping toward each incoming raw
+  // sample from the "audio-level" event.
+  const smoothedLevelRef = useRef<number>(0);
 
   // Handle window resize
   useEffect(() => {
@@ -92,88 +73,6 @@ export function AudioVisualizer({ stream, isRecording }: AudioVisualizerProps) {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  // Create a fake audio stream using oscillators that mimic speech patterns
-  const createFakeStream = (
-    audioContext: AudioContext,
-    analyser: AnalyserNode
-  ) => {
-    // Create multiple oscillators with different frequencies to simulate speech
-    const frequencies = [120, 240, 350, 500, 800, 1200, 2000, 3500];
-    const oscillators: OscillatorNode[] = [];
-    const gainNodes: GainNode[] = [];
-
-    frequencies.forEach((freq, index) => {
-      const oscillator = audioContext.createOscillator();
-      const gainNode = audioContext.createGain();
-
-      // Use different wave types for variety
-      oscillator.type = index % 2 === 0 ? "sine" : "triangle";
-      oscillator.frequency.setValueAtTime(freq, audioContext.currentTime);
-
-      // Set initial gain (very low to simulate quiet speech)
-      gainNode.gain.setValueAtTime(0.01, audioContext.currentTime);
-
-      oscillator.connect(gainNode);
-      gainNode.connect(analyser);
-
-      oscillator.start();
-      oscillators.push(oscillator);
-      gainNodes.push(gainNode);
-    });
-
-    oscillatorsRef.current = oscillators;
-    gainNodesRef.current = gainNodes;
-
-    // Animate the gain to simulate speech patterns
-    const animateGain = () => {
-      if (!isRecording || !audioContextRef.current) return;
-
-      gainNodes.forEach((gainNode, index) => {
-        // Create random fluctuations to simulate speech
-        const baseGain = 0.02 + Math.random() * 0.08;
-        const speechPattern =
-          Math.sin(Date.now() / (200 + index * 50)) * 0.5 + 0.5;
-        const randomBurst = Math.random() > 0.7 ? Math.random() * 0.1 : 0;
-        const targetGain = baseGain * speechPattern + randomBurst;
-
-        gainNode.gain.linearRampToValueAtTime(
-          targetGain,
-          audioContextRef.current!.currentTime + 0.05
-        );
-      });
-
-      setTimeout(animateGain, 100);
-    };
-
-    animateGain();
-  };
-
-  // Initialize audio context and start visualization
-  const startVisualization = async () => {
-    try {
-      const audioContext = new AudioContext();
-      audioContextRef.current = audioContext;
-
-      const analyser = audioContext.createAnalyser();
-      analyser.fftSize = AUDIO_CONFIG.FFT_SIZE;
-      analyser.smoothingTimeConstant = AUDIO_CONFIG.SMOOTHING;
-      analyserRef.current = analyser;
-
-      if (stream) {
-        // Use real stream if available
-        const source = audioContext.createMediaStreamSource(stream);
-        source.connect(analyser);
-      } else {
-        // Create fake stream for visualization
-        createFakeStream(audioContext, analyser);
-      }
-
-      draw();
-    } catch (error) {
-      console.error("Error starting visualization:", error);
-    }
-  };
-
   // Calculate the color intensity based on bar height
   const getBarColor = (normalizedHeight: number) => {
     const intensity =
@@ -198,61 +97,102 @@ export function AudioVisualizer({ stream, isRecording }: AudioVisualizerProps) {
     ctx.fillRect(x, centerY, width, height);
   };
 
-  // Main drawing function
-  const draw = () => {
-    if (!isRecording) return;
-
+  // Render the current rolling history buffer to the canvas
+  const drawFrame = () => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
-    if (!canvas || !ctx || !analyserRef.current) return;
+    if (!canvas || !ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
-    ctx.scale(dpr, dpr);
+    const cssWidth = canvas.width / dpr;
+    const cssHeight = canvas.height / dpr;
 
-    const analyser = analyserRef.current;
-    const bufferLength = analyser.frequencyBinCount;
-    const frequencyData = new Uint8Array(bufferLength);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssWidth, cssHeight);
 
-    const drawFrame = () => {
-      animationFrameRef.current = requestAnimationFrame(drawFrame);
+    const history = historyRef.current;
+    const barWidth = Math.max(
+      AUDIO_CONFIG.MIN_BAR_WIDTH,
+      cssWidth / history.length - AUDIO_CONFIG.BAR_SPACING
+    );
+    const centerY = cssHeight / 2;
+    let x = 0;
 
-      // Get current frequency data
-      analyser.getByteFrequencyData(frequencyData);
-
-      // Clear canvas - use CSS pixels for clearing
-      ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
-
-      // Calculate dimensions in CSS pixels
-      const barWidth = Math.max(
-        AUDIO_CONFIG.MIN_BAR_WIDTH,
-        canvas.width / dpr / bufferLength - AUDIO_CONFIG.BAR_SPACING
+    for (let i = 0; i < history.length; i++) {
+      const normalizedHeight = history[i];
+      const barHeight = Math.max(
+        AUDIO_CONFIG.MIN_BAR_HEIGHT,
+        normalizedHeight * centerY
       );
-      const centerY = canvas.height / dpr / 2;
-      let x = 0;
 
-      // Draw each frequency bar
-      for (let i = 0; i < bufferLength; i++) {
-        const normalizedHeight = frequencyData[i] / 255; // Convert to 0-1 range
-        const barHeight = Math.max(
-          AUDIO_CONFIG.MIN_BAR_HEIGHT,
-          normalizedHeight * centerY
-        );
+      drawBar(
+        ctx,
+        x,
+        centerY,
+        barWidth,
+        barHeight,
+        getBarColor(normalizedHeight)
+      );
 
-        drawBar(
-          ctx,
-          x,
-          centerY,
-          barWidth,
-          barHeight,
-          getBarColor(normalizedHeight)
-        );
+      x += barWidth + AUDIO_CONFIG.BAR_SPACING;
+    }
+  };
 
-        x += barWidth + AUDIO_CONFIG.BAR_SPACING;
+  // Subscribe to real audio levels and drive the draw loop while recording
+  useEffect(() => {
+    if (!isRecording) {
+      cancelAnimationFrame(animationFrameRef.current);
+      return;
+    }
+
+    // Reset state so a new recording session starts from a flat, silent
+    // meter instead of carrying over the previous session's history.
+    historyRef.current = new Array(AUDIO_CONFIG.HISTORY_LENGTH).fill(0);
+    smoothedLevelRef.current = 0;
+
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+
+    const setupListener = async () => {
+      try {
+        const fn = await listen<number>("audio-level", (event) => {
+          const rawLevel = Math.min(1, Math.max(0, event.payload));
+          smoothedLevelRef.current +=
+            (rawLevel - smoothedLevelRef.current) * AUDIO_CONFIG.SMOOTHING;
+
+          const history = historyRef.current;
+          history.push(smoothedLevelRef.current);
+          if (history.length > AUDIO_CONFIG.HISTORY_LENGTH) {
+            history.shift();
+          }
+        });
+
+        // The effect may have been cleaned up while awaiting listen(); if so,
+        // unlisten immediately so no stale listener survives.
+        if (cancelled) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      } catch (error) {
+        console.error("Failed to subscribe to audio-level event:", error);
       }
     };
 
-    drawFrame();
-  };
+    setupListener();
+
+    const loop = () => {
+      drawFrame();
+      animationFrameRef.current = requestAnimationFrame(loop);
+    };
+    animationFrameRef.current = requestAnimationFrame(loop);
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      cancelAnimationFrame(animationFrameRef.current);
+    };
+  }, [isRecording]);
 
   return (
     <div ref={containerRef} className="!h-[32px] !w-full pl-4 pt-2">

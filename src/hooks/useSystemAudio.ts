@@ -58,6 +58,21 @@ export function useSystemAudio() {
   // per response instead of once per token.
   const [hasAIResponse, setHasAIResponse] = useState<boolean>(false);
   const [error, setError] = useState<string>("");
+  // Transient notice shown when the VAD discards a too-short segment (#24), so
+  // the user understands why no response is coming. Auto-clears.
+  const [discardedNotice, setDiscardedNotice] = useState<string>("");
+  // "Auto-respond" toggle (#25). When true (default), each detected segment is
+  // transcribed AND sent to the AI. When false, segments only accumulate as a
+  // visible transcript timeline; the user fires the AI on demand via the global
+  // hotkey. Useful in long sessions to avoid ~60 AI calls/hour.
+  const [autoRespond, setAutoRespondState] = useState<boolean>(() => {
+    const stored = safeLocalStorage.getItem(
+      STORAGE_KEYS.SYSTEM_AUDIO_AUTO_RESPOND
+    );
+    return stored === null ? true : stored === "true";
+  });
+  // Accumulated transcript while auto-respond is off, shown as a timeline.
+  const [pendingTranscript, setPendingTranscript] = useState<string>("");
   const [setupRequired, setSetupRequired] = useState<boolean>(false);
   const [quickActions, setQuickActions] = useState<string[]>([]);
   const [isManagingQuickActions, setIsManagingQuickActions] =
@@ -100,6 +115,11 @@ export function useSystemAudio() {
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isSavingRef = useRef<boolean>(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const discardedTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Refs mirror auto-respond state so the speech handler and the global-hotkey
+  // callback read the freshest value without being rebuilt on every change.
+  const autoRespondRef = useRef<boolean>(autoRespond);
+  const pendingTranscriptRef = useRef<string>("");
   // Holds the latest speech-detected handler so the Tauri listener can be
   // registered exactly once (empty deps) yet always call fresh state/providers.
   // Previously the effect re-registered on every message, opening a window
@@ -108,6 +128,21 @@ export function useSystemAudio() {
   const speechHandlerRef = useRef<
     ((event: { payload: unknown }) => void | Promise<void>) | null
   >(null);
+
+  // Persist the auto-respond toggle and keep its ref in sync (#25).
+  const setAutoRespond = useCallback((value: boolean) => {
+    setAutoRespondState(value);
+    autoRespondRef.current = value;
+    safeLocalStorage.setItem(
+      STORAGE_KEYS.SYSTEM_AUDIO_AUTO_RESPOND,
+      String(value)
+    );
+  }, []);
+
+  // Keep pendingTranscriptRef mirroring the state for the hotkey callback.
+  useEffect(() => {
+    pendingTranscriptRef.current = pendingTranscript;
+  }, [pendingTranscript]);
 
   // VAD config and context settings are loaded from localStorage by their
   // shared stores (useVadConfigStore / useSystemAudioContextStore) on mount.
@@ -168,11 +203,18 @@ export function useSystemAudio() {
           setIsRecordingInContinuousMode(false);
         });
 
-        // Speech discarded (too short)
-        discardedUnlisten = await listen("speech-discarded", (event) => {
-          const reason = event.payload as string;
-          console.log("Speech discarded:", reason);
-          // Don't show error - this is expected behavior
+        // Speech discarded (too short). Not an error, but surface a subtle,
+        // self-clearing notice so the user isn't left waiting for a response
+        // that will never come (#24).
+        discardedUnlisten = await listen("speech-discarded", () => {
+          setDiscardedNotice("Ignored — too short (likely background noise)");
+          if (discardedTimeoutRef.current) {
+            clearTimeout(discardedTimeoutRef.current);
+          }
+          discardedTimeoutRef.current = setTimeout(
+            () => setDiscardedNotice(""),
+            2500
+          );
         });
       } catch (err) {
         console.error("Failed to setup continuous recording listeners:", err);
@@ -501,6 +543,16 @@ export function useSystemAudio() {
           setLastTranscription(transcription);
           setError("");
 
+          // Auto-respond OFF (#25): accumulate the transcript into the timeline
+          // and stop — the user triggers the AI later via the global hotkey.
+          if (!autoRespondRef.current) {
+            setPendingTranscript((prev) =>
+              prev ? `${prev}\n${transcription}` : transcription
+            );
+            setIsPopoverOpen(true);
+            return;
+          }
+
           const effectiveSystemPrompt = useSystemPrompt
             ? systemPrompt || DEFAULT_SYSTEM_PROMPT
             : contextContent || DEFAULT_SYSTEM_PROMPT;
@@ -619,6 +671,7 @@ export function useSystemAudio() {
       setLastTranscription("");
       setStreamingResponse("");
       setHasAIResponse(false);
+      setPendingTranscript("");
       setError("");
       setIsPopoverOpen(false);
     } catch (err) {
@@ -694,18 +747,47 @@ export function useSystemAudio() {
 
   useEffect(() => {
     globalShortcuts.registerSystemAudioCallback(async () => {
+      // In "transcribe-only" mode (#25) with an accumulated transcript, the
+      // hotkey fires the AI on that transcript instead of toggling capture, so
+      // the user can keep listening and ask for a response on demand.
+      const pending = pendingTranscriptRef.current.trim();
+      if (capturing && !autoRespondRef.current && pending) {
+        const effectiveSystemPrompt = useSystemPrompt
+          ? systemPrompt || DEFAULT_SYSTEM_PROMPT
+          : contextContent || DEFAULT_SYSTEM_PROMPT;
+        const previousMessages = conversation.messages.map((msg) => ({
+          role: msg.role,
+          content: msg.content,
+        }));
+        setLastTranscription(pending);
+        setPendingTranscript("");
+        await processWithAI(pending, effectiveSystemPrompt, previousMessages);
+        return;
+      }
+
       if (capturing) {
         await stopCapture();
       } else {
         await startCapture();
       }
     });
-  }, [startCapture, stopCapture]);
+  }, [
+    startCapture,
+    stopCapture,
+    processWithAI,
+    useSystemPrompt,
+    systemPrompt,
+    contextContent,
+    conversation.messages,
+  ]);
 
   useEffect(() => {
     return () => {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
+      }
+      if (discardedTimeoutRef.current) {
+        clearTimeout(discardedTimeoutRef.current);
       }
       invoke("stop_system_audio_capture").catch(() => {});
     };
@@ -768,6 +850,7 @@ export function useSystemAudio() {
     setLastTranscription("");
     setStreamingResponse("");
     setHasAIResponse(false);
+    setPendingTranscript("");
     setError("");
     setSetupRequired(false);
     setIsProcessing(false);
@@ -874,6 +957,10 @@ export function useSystemAudio() {
     // Only the boolean is exposed for show/hide logic.
     hasAIResponse,
     error,
+    discardedNotice,
+    autoRespond,
+    setAutoRespond,
+    pendingTranscript,
     setupRequired,
     startCapture,
     stopCapture,
