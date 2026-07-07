@@ -23,7 +23,11 @@ import { ResultsSection } from "./ResultsSection";
 import { PermissionFlow } from "./PermissionFlow";
 import { QuickActions } from "./QuickActions";
 import { LiveTranscription } from "./LiveTranscription";
-import { useSystemAudioType, useDeepgramStreaming } from "@/hooks";
+import {
+  useSystemAudioType,
+  useDeepgramStreaming,
+  setWindowForceExpanded,
+} from "@/hooks";
 import { useApp } from "@/contexts";
 import { cn } from "@/lib/utils";
 
@@ -123,6 +127,33 @@ export const SystemAudio = (props: useSystemAudioType) => {
       updateVadConfiguration({ ...vadConfig, enabled: next === "auto" });
     }
   };
+
+  // The window height is controlled explicitly: the overlay is a ~60px bar
+  // until something grows it. useSystemAudio's own effect grows it for the
+  // batch pipeline (capturing/error/…), but it does NOT know about Live mode —
+  // so in Live the panel would render into a window that's still 60px tall and
+  // stay clipped/invisible. This effect owns the resize for the Live states
+  // (mode selected, or a stream running) so the panel actually shows.
+  useEffect(() => {
+    const liveActive = liveMode || dg.isStreaming;
+    // Pin the window expanded while Live is active so the DOM-polling observer
+    // in useWindowResize can't shrink it out from under the panel.
+    setWindowForceExpanded(liveActive);
+    if (liveActive) {
+      setIsPopoverOpen(true);
+      resizeWindow(true);
+    } else {
+      // Left Live: unpin and let the hook's own effect decide the size.
+      resizeWindow(!!capturing || !!error);
+    }
+  }, [
+    liveMode,
+    dg.isStreaming,
+    capturing,
+    error,
+    setIsPopoverOpen,
+    resizeWindow,
+  ]);
 
   // Keyboard shortcut for Cmd+K to toggle view mode
   useEffect(() => {

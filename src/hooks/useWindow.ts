@@ -2,8 +2,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useCallback, useEffect } from "react";
 
+// When true, the window is pinned expanded regardless of DOM popover state.
+// Used by Live mode: its panel is driven by React state, and the DOM-polling
+// MutationObserver below would otherwise shrink the window the instant it
+// doesn't see a Radix popover wrapper, clipping the Live panel out of view.
+let forceExpanded = false;
+export const setWindowForceExpanded = (value: boolean) => {
+  forceExpanded = value;
+};
+
 // Helper function to check if any popover is open in the DOM
 const isAnyPopoverOpen = (): boolean => {
+  if (forceExpanded) return true;
   const popoverContents = document.querySelectorAll(
     "[data-radix-popper-content-wrapper]"
   );
