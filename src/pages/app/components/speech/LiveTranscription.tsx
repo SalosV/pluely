@@ -5,7 +5,10 @@ import {
   SquareIcon,
   MicIcon,
   MicOffIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
 } from "lucide-react";
+import { useState } from "react";
 import { Button, Switch } from "@/components";
 import type { TranscriptEntry, InterimEntry } from "@/hooks";
 
@@ -19,6 +22,9 @@ type Props = {
   onToggleMic: () => void;
   handsFree: boolean;
   onToggleHandsFree: (value: boolean) => void;
+  // When an AI response is showing, the transcript collapses to just the latest
+  // interlocutor turn so the response gets the space (expandable on demand).
+  collapsed: boolean;
   onStart: () => void;
   onStop: () => void;
 };
@@ -53,10 +59,21 @@ export const LiveTranscription = ({
   onToggleMic,
   handsFree,
   onToggleHandsFree,
+  collapsed,
   onStart,
   onStop,
 }: Props) => {
   const hasContent = finals.length > 0 || interims.length > 0;
+  // Manual override to expand the transcript even while a response is showing.
+  const [expanded, setExpanded] = useState(false);
+  // Collapse only when the parent says to AND the user hasn't expanded.
+  const isCollapsed = collapsed && !expanded;
+
+  // When collapsed, show just the most recent interlocutor turn (that's the
+  // context for the answer being read); otherwise show the full transcript.
+  const visibleFinals = isCollapsed
+    ? finals.filter((f) => f.channel === 1).slice(-1)
+    : finals;
 
   return (
     <div className="rounded-lg border border-border/50 bg-muted/20 p-3 space-y-2">
@@ -158,7 +175,7 @@ export const LiveTranscription = ({
 
       {hasContent && (
         <div className="space-y-1.5 text-[11px] leading-relaxed">
-          {finals.map((entry) => {
+          {visibleFinals.map((entry) => {
             const label = channelLabel(entry.channel);
             return label ? (
               <p key={entry.id}>
@@ -173,24 +190,49 @@ export const LiveTranscription = ({
               </p>
             );
           })}
-          {/* Interim (in-progress) results per channel, greyed out. */}
-          {interims.map((it) => {
-            const label = channelLabel(it.channel);
-            return (
-              <p
-                key={`interim-${it.channel}`}
-                className="text-muted-foreground/70 italic"
-              >
-                {label && (
-                  <span className={`font-semibold ${channelColor(it.channel)}`}>
-                    {label}:{" "}
-                  </span>
-                )}
-                {it.text}
-              </p>
-            );
-          })}
+          {/* Interim (in-progress) results per channel, greyed out. Hidden while
+              collapsed so the response keeps the space. */}
+          {!isCollapsed &&
+            interims.map((it) => {
+              const label = channelLabel(it.channel);
+              return (
+                <p
+                  key={`interim-${it.channel}`}
+                  className="text-muted-foreground/70 italic"
+                >
+                  {label && (
+                    <span
+                      className={`font-semibold ${channelColor(it.channel)}`}
+                    >
+                      {label}:{" "}
+                    </span>
+                  )}
+                  {it.text}
+                </p>
+              );
+            })}
         </div>
+      )}
+
+      {/* Expand/collapse control: only while a response is showing (collapsed).
+          Lets the user peek at the full transcript without losing the answer. */}
+      {collapsed && hasContent && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+        >
+          {expanded ? (
+            <>
+              <ChevronUpIcon className="w-3 h-3" /> Hide transcript
+            </>
+          ) : (
+            <>
+              <ChevronDownIcon className="w-3 h-3" /> Show full transcript (
+              {finals.length})
+            </>
+          )}
+        </button>
       )}
     </div>
   );

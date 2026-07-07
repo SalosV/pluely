@@ -647,6 +647,7 @@ export const SystemAudio = (props: useSystemAudioType) => {
                       onToggleMic={() => dg.toggleMicMuted()}
                       handsFree={handsFree}
                       onToggleHandsFree={setHandsFree}
+                      collapsed={hasAIResponse || isAIProcessing}
                       onStart={startLive}
                       onStop={() => dg.stopStreaming()}
                     />
