@@ -137,6 +137,18 @@ export const SystemAudio = (props: useSystemAudioType) => {
     );
   };
 
+  // Live transcription language. "multi" = Deepgram code-switching (its default,
+  // more false positives); "en"/"es" restrict to a single language (Deepgram
+  // won't transcribe other languages → far fewer false positives). Pick per
+  // interview since the language is usually known up front.
+  const [liveLanguage, setLiveLanguageState] = useState<string>(
+    () => localStorage.getItem(STORAGE_KEYS.SYSTEM_AUDIO_LIVE_LANGUAGE) || "multi"
+  );
+  const setLiveLanguage = (value: string) => {
+    setLiveLanguageState(value);
+    localStorage.setItem(STORAGE_KEYS.SYSTEM_AUDIO_LIVE_LANGUAGE, value);
+  };
+
   // Id of the newest final already sent to the AI, so the same interlocutor
   // turn is never answered twice (advanced synchronously at fire time).
   const consumedFinalIdRef = useRef<number>(-1);
@@ -404,7 +416,7 @@ export const SystemAudio = (props: useSystemAudioType) => {
         ? selectedAudioDevices.input.id
         : undefined;
     await dg.startStreaming(
-      { apiKey, model, language: "multi", diarize: false },
+      { apiKey, model, language: liveLanguage, diarize: false },
       deviceId,
       inputDeviceId
     );
@@ -710,6 +722,8 @@ export const SystemAudio = (props: useSystemAudioType) => {
                       onToggleHandsFree={setHandsFree}
                       turnDebounceMs={turnDebounceMs}
                       onChangeDebounce={setTurnDebounceMs}
+                      language={liveLanguage}
+                      onChangeLanguage={setLiveLanguage}
                       collapsed={hasAIResponse || isAIProcessing}
                       onStart={startLive}
                       onStop={() => dg.stopStreaming()}

@@ -25,6 +25,9 @@ type Props = {
   // Debounce (ms) before hands-free fires the AI after the interlocutor stops.
   turnDebounceMs: number;
   onChangeDebounce: (value: number) => void;
+  // Transcription language: "multi" (code-switching) | "en" | "es".
+  language: string;
+  onChangeLanguage: (value: string) => void;
   // When an AI response is showing, the transcript collapses to just the latest
   // interlocutor turn so the response gets the space (expandable on demand).
   collapsed: boolean;
@@ -64,6 +67,8 @@ export const LiveTranscription = ({
   onToggleHandsFree,
   turnDebounceMs,
   onChangeDebounce,
+  language,
+  onChangeLanguage,
   collapsed,
   onStart,
   onStop,
@@ -174,6 +179,43 @@ export const LiveTranscription = ({
             </span>
           </div>
         )}
+
+        {/* Language: restrict to one language for fewer false positives, or
+            "Both" for code-switching. Locked while streaming (changing it needs
+            a reconnect); stop to change. */}
+        <div className="flex items-center justify-between gap-2 pt-0.5">
+          <span className="text-[9px] text-muted-foreground whitespace-nowrap">
+            Language
+          </span>
+          <div className="flex items-center gap-0.5 rounded-md bg-background/60 p-0.5">
+            {[
+              { id: "en", label: "EN" },
+              { id: "es", label: "ES" },
+              { id: "multi", label: "Both" },
+            ].map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                disabled={isStreaming}
+                onClick={() => onChangeLanguage(opt.id)}
+                title={
+                  isStreaming
+                    ? "Stop the session to change language"
+                    : opt.id === "multi"
+                      ? "Detect English + Spanish (code-switching)"
+                      : `Only ${opt.id === "en" ? "English" : "Spanish"} (fewer false positives)`
+                }
+                className={`px-1.5 py-0.5 rounded text-[9px] font-medium transition-colors ${
+                  language === opt.id
+                    ? "bg-blue-500 text-white"
+                    : "text-muted-foreground hover:text-foreground"
+                } ${isStreaming ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* Connecting spinner: only while a stream is starting up. */}
