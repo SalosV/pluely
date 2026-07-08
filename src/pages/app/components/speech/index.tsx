@@ -20,6 +20,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ModeSwitcher, type CaptureMode } from "./ModeSwitcher";
 import { RecordingPanel } from "./RecordingPanel";
 import { ResultsSection } from "./ResultsSection";
+import { LiveResponse } from "./LiveResponse";
 import { PermissionFlow } from "./PermissionFlow";
 import { QuickActions } from "./QuickActions";
 import { LiveTranscription } from "./LiveTranscription";
@@ -710,6 +711,14 @@ export const SystemAudio = (props: useSystemAudioType) => {
                   />
                 ) : liveMode ? (
                   <>
+                    {/* When a response is showing, put "Say this" FIRST so the
+                        eyes land on what to read aloud; the transcript collapses
+                        below it. Otherwise (no answer yet) the transcript stays
+                        on top as the primary surface. */}
+                    {(hasAIResponse || isAIProcessing) && (
+                      <LiveResponse isAIProcessing={isAIProcessing} />
+                    )}
+
                     <LiveTranscription
                       isStreaming={dg.isStreaming}
                       connected={dg.connected}
@@ -728,19 +737,6 @@ export const SystemAudio = (props: useSystemAudioType) => {
                       onStart={startLive}
                       onStop={() => dg.stopStreaming()}
                     />
-
-                    {/* AI response shown BELOW the live transcript (reads the
-                        streaming text from the store). Only rendered once
-                        there's a response or one is in flight. */}
-                    {(hasAIResponse || isAIProcessing) && (
-                      <ResultsSection
-                        lastTranscription={lastTranscription}
-                        isAIProcessing={isAIProcessing}
-                        conversation={conversation}
-                        conversationMode={conversationMode}
-                        setConversationMode={setConversationMode}
-                      />
-                    )}
                   </>
                 ) : (
                   <>
