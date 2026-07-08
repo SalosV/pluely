@@ -315,33 +315,30 @@ export const SystemAudio = (props: useSystemAudioType) => {
     setIsPopoverOpen(true);
   };
 
-  // The window height is controlled explicitly: the overlay is a ~60px bar
+  // The window height is controlled explicitly: the overlay is a ~54px bar
   // until something grows it. useSystemAudio's own effect grows it for the
-  // batch pipeline (capturing/error/…), but it does NOT know about Live mode —
-  // so in Live the panel would render into a window that's still 60px tall and
-  // stay clipped/invisible. This effect owns the resize for the Live states
-  // (mode selected, or a stream running) so the panel actually shows.
+  // batch pipeline (capturing/error/…), but it does NOT know about Live, so this
+  // effect owns the resize for the Live states so the panel actually shows.
+  //
+  // IMPORTANT: `liveMode` alone must NOT expand the window. It's a persisted
+  // preference (the last-selected capture mode), so it's `true` at launch
+  // whenever the user last left Live selected — even though the panel is closed
+  // and the user hasn't touched the overlay. Expanding on it left an invisible
+  // 760px window swallowing clicks over whatever's behind the bar. The window
+  // should grow only when the panel is actually OPEN (isPopoverOpen), a stream
+  // is running, or a batch capture/error is in flight. When the user opens the
+  // Live panel via the headphones button, handleToggleCapture sets
+  // isPopoverOpen(true), which is what triggers the expand here.
   useEffect(() => {
-    const liveActive = liveMode || dg.isStreaming;
-    // The window should be expanded whenever the panel is meant to be visible:
-    // a Live session, an open popover (e.g. right after a mode switch, so the
-    // newly-selected mode's panel shows instead of collapsing to the bar), or an
-    // active batch capture / error. Pin force-expand in all those cases so the
-    // DOM-polling observer in useWindowResize can't shrink it away.
     const shouldExpand =
-      liveActive || isPopoverOpen || !!capturing || !!error;
+      isPopoverOpen || dg.isStreaming || !!capturing || !!error;
     setWindowForceExpanded(shouldExpand);
-    if (liveActive) {
-      setIsPopoverOpen(true);
-    }
     resizeWindow(shouldExpand);
   }, [
-    liveMode,
     dg.isStreaming,
     isPopoverOpen,
     capturing,
     error,
-    setIsPopoverOpen,
     resizeWindow,
   ]);
 
