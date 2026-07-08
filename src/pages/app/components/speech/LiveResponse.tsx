@@ -7,10 +7,21 @@ import {
 } from "lucide-react";
 import { Markdown, CopyButton } from "@/components";
 import { useStreamingResponse } from "@/hooks";
+import { STORAGE_KEYS } from "@/config/constants";
 
 type Props = {
   isAIProcessing: boolean;
+  // Hands-free sessions default the support section to OPEN (the user is
+  // reading, not clicking); hotkey sessions default it closed.
+  handsFree: boolean;
 };
+
+// Spoken-text sizes for the A−/A+ stepper. These are core Tailwind utilities
+// (NOT `prose-*` — the typography plugin isn't installed, so prose classes
+// generate no CSS). Streamdown paragraphs carry no size class of their own, so
+// they inherit whichever of these the wrapper sets.
+const FONT_SIZES = ["text-base", "text-lg", "text-xl", "text-2xl"] as const;
+const DEFAULT_FONT_INDEX = 1; // text-lg
 
 // The system prompt is instructed to output the spoken answer first, then a
 // `---` horizontal rule, then the supporting bullets. We split on that rule so
@@ -38,27 +49,59 @@ function splitSpokenAndSupport(text: string): {
   return { spoken, support };
 }
 
+// One sentence per line, like a real teleprompter script: you grab a line, say
+// it, drop to the next (chunking + eye-voice span). Sentence-ending punctuation
+// followed by whitespace becomes a paragraph break; decimals ("3.5") survive
+// because their period has no whitespace after it. The trailing in-progress
+// sentence during streaming simply renders as the last line.
+function toTeleprompterLines(text: string): string {
+  return text.replace(/([.!?…])\s+/g, "$1\n\n");
+}
+
 /**
  * Live-mode reading view for the AI answer (distinct from the batch
  * ResultsSection). This is the surface the user READS ALOUD while on camera, so
- * it's optimized for glance-reading, not scanning:
- *   - the SPOKEN part (everything the prompt puts before the `---`) is shown big
- *     (`prose-lg`) and on its own, so the eyes grab it in one glance;
+ * it's laid out like a teleprompter, not a chat bubble:
+ *   - the SPOKEN part (everything the prompt puts before the `---`) renders one
+ *     sentence per line, in large adjustable type (A− / A+, persisted);
  *   - the SUPPORT part (bullets, gotchas, "if they push") is smaller and
- *     collapsed by default — it's there to peek at only if the interviewer digs;
+ *     collapsible — open by default in hands-free, closed on hotkey sessions;
  *   - the whole panel renders ABOVE the (collapsed) transcript in Live, so the
  *     eyes land on "what I say" first.
  */
-export const LiveResponse = ({ isAIProcessing }: Props) => {
+export const LiveResponse = ({ isAIProcessing, handsFree }: Props) => {
   // Same streaming store the batch view subscribes to — this is the only Live
   // element that re-renders per token.
   const response = useStreamingResponse();
-  const [showSupport, setShowSupport] = useState(false);
+
+  // Support visibility: follow the hands-free default until the user toggles
+  // it manually (the override wins for the rest of the session).
+  const [supportOverride, setSupportOverride] = useState<boolean | null>(null);
+  const showSupport = supportOverride ?? handsFree;
+
+  // Spoken-text size (A− / A+), persisted across sessions.
+  const [fontIndex, setFontIndexState] = useState<number>(() => {
+    const raw = Number(
+      localStorage.getItem(STORAGE_KEYS.SYSTEM_AUDIO_SPOKEN_FONT)
+    );
+    return Number.isInteger(raw) && raw >= 0 && raw < FONT_SIZES.length
+      ? raw
+      : DEFAULT_FONT_INDEX;
+  });
+  const setFontIndex = (next: number) => {
+    const clamped = Math.min(FONT_SIZES.length - 1, Math.max(0, next));
+    setFontIndexState(clamped);
+    localStorage.setItem(
+      STORAGE_KEYS.SYSTEM_AUDIO_SPOKEN_FONT,
+      String(clamped)
+    );
+  };
 
   const { spoken, support } = useMemo(
     () => splitSpokenAndSupport(response),
     [response]
   );
+  const spokenLines = useMemo(() => toTeleprompterLines(spoken), [spoken]);
 
   return (
     <div className="rounded-lg border border-primary/30 bg-primary/[0.03] p-3 space-y-2">
@@ -67,7 +110,31 @@ export const LiveResponse = ({ isAIProcessing }: Props) => {
           <SparklesIcon className="w-3.5 h-3.5 text-primary" />
           <h4 className="text-xs font-medium">Say this</h4>
         </div>
-        {response && <CopyButton content={response} />}
+        <div className="flex items-center gap-1.5">
+          {/* Spoken-text size stepper. Only affects the teleprompter (spoken)
+              part; the support stays small. */}
+          <div className="flex items-center gap-0.5 rounded-md bg-background/60 p-0.5">
+            <button
+              type="button"
+              onClick={() => setFontIndex(fontIndex - 1)}
+              disabled={fontIndex === 0}
+              title="Smaller text"
+              className="px-1.5 py-0.5 rounded text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+            >
+              A−
+            </button>
+            <button
+              type="button"
+              onClick={() => setFontIndex(fontIndex + 1)}
+              disabled={fontIndex === FONT_SIZES.length - 1}
+              title="Larger text"
+              className="px-1.5 py-0.5 rounded text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+            >
+              A+
+            </button>
+          </div>
+          {response && <CopyButton content={response} />}
+        </div>
       </div>
 
       {isAIProcessing && !response ? (
@@ -77,23 +144,25 @@ export const LiveResponse = ({ isAIProcessing }: Props) => {
         </div>
       ) : (
         <>
-          {/* SPOKEN part — the teleprompter line. `prose-lg` + relaxed leading =
-              readable out of the corner of the eye. Tight vertical rhythm so
-              short sentences sit close together. */}
-          <div className="prose prose-lg max-w-none dark:prose-invert leading-relaxed [&_p]:my-1 [&_p]:font-normal text-foreground">
-            <Markdown isStreaming={isAIProcessing}>{spoken}</Markdown>
+          {/* SPOKEN part — the teleprompter. One sentence per line (Streamdown
+              renders each as its own <p> inside a space-y-4 root), inheritable
+              size from the stepper, relaxed leading for glance-reading. */}
+          <div
+            className={`${FONT_SIZES[fontIndex]} leading-relaxed text-foreground`}
+          >
+            <Markdown isStreaming={isAIProcessing}>{spokenLines}</Markdown>
             {isAIProcessing && !support && (
               <span className="inline-block w-2 h-5 bg-primary animate-pulse ml-1 align-middle" />
             )}
           </div>
 
-          {/* SUPPORT part — smaller, collapsed by default. Only rendered once the
-              `---` has arrived and there's actually support text. */}
+          {/* SUPPORT part — smaller, collapsible. Only rendered once the `---`
+              has arrived and there's actually support text. */}
           {support && (
             <div className="pt-1 border-t border-border/40">
               <button
                 type="button"
-                onClick={() => setShowSupport((v) => !v)}
+                onClick={() => setSupportOverride(!showSupport)}
                 className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
               >
                 {showSupport ? (
@@ -107,7 +176,7 @@ export const LiveResponse = ({ isAIProcessing }: Props) => {
                 )}
               </button>
               {showSupport && (
-                <div className="mt-1.5 prose prose-sm max-w-none dark:prose-invert [&_p]:my-1 [&_ul]:my-1 [&_li]:my-0.5 text-foreground/80">
+                <div className="mt-1.5 text-sm text-foreground/80">
                   <Markdown isStreaming={isAIProcessing}>{support}</Markdown>
                   {isAIProcessing && (
                     <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-1 align-middle" />

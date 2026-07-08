@@ -713,7 +713,10 @@ export const SystemAudio = (props: useSystemAudioType) => {
                         below it. Otherwise (no answer yet) the transcript stays
                         on top as the primary surface. */}
                     {(hasAIResponse || isAIProcessing) && (
-                      <LiveResponse isAIProcessing={isAIProcessing} />
+                      <LiveResponse
+                        isAIProcessing={isAIProcessing}
+                        handsFree={handsFree}
+                      />
                     )}
 
                     <LiveTranscription
